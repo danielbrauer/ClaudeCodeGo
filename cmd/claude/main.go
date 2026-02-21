@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/auth"
 	"github.com/anthropics/claude-code-go/internal/conversation"
+	"github.com/anthropics/claude-code-go/internal/tools"
 )
 
 var (
@@ -28,6 +29,7 @@ func main() {
 	maxTokens := flag.Int("max-tokens", api.DefaultMaxTokens, "Maximum response tokens")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	loginFlag := flag.Bool("login", false, "Log in with OAuth")
+	dangerousNoPermissions := flag.Bool("dangerously-skip-permissions", false, "Skip all permission prompts (use with caution)")
 	flag.Parse()
 
 	if *versionFlag {
@@ -101,13 +103,31 @@ func main() {
 	// Build system prompt.
 	system := conversation.BuildSystemPrompt(cwd)
 
-	// Create conversation loop (no tools in Phase 1).
-	handler := &conversation.PrintStreamHandler{}
+	// Set up permission handler.
+	var permHandler tools.PermissionHandler
+	if *dangerousNoPermissions {
+		permHandler = &tools.AlwaysAllowPermissionHandler{}
+	} else {
+		permHandler = tools.NewTerminalPermissionHandler()
+	}
+
+	// Create tool registry with all Phase 2 tools.
+	registry := tools.NewRegistry(permHandler)
+	registry.Register(tools.NewBashTool(cwd))
+	registry.Register(tools.NewFileReadTool())
+	registry.Register(tools.NewFileEditTool())
+	registry.Register(tools.NewFileWriteTool())
+	registry.Register(tools.NewGlobTool(cwd))
+	registry.Register(tools.NewGrepTool(cwd))
+
+	// Create conversation loop with tools.
+	handler := &conversation.ToolAwareStreamHandler{}
 	loop := conversation.NewLoop(conversation.LoopConfig{
-		Client:  client,
-		System:  system,
-		Tools:   nil, // No tools yet.
-		Handler: handler,
+		Client:   client,
+		System:   system,
+		Tools:    registry.Definitions(),
+		ToolExec: registry,
+		Handler:  handler,
 	})
 
 	// Handle initial prompt from arguments.
@@ -202,11 +222,12 @@ func printHelp() {
   /quit     - Exit
 
 CLI flags:
-  --model <model>     Model to use (opus, sonnet, haiku)
-  --max-tokens <n>    Maximum response tokens
-  -p                  Print mode (non-interactive)
-  -c                  Continue most recent session
-  -r <id>             Resume session by ID
-  --login             Log in with OAuth
-  --version           Print version`)
+  --model <model>                   Model to use (opus, sonnet, haiku)
+  --max-tokens <n>                  Maximum response tokens
+  -p                                Print mode (non-interactive)
+  -c                                Continue most recent session
+  -r <id>                           Resume session by ID
+  --login                           Log in with OAuth
+  --version                         Print version
+  --dangerously-skip-permissions    Skip all permission prompts`)
 }
