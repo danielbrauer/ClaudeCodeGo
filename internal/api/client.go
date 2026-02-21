@@ -108,6 +108,8 @@ func (c *Client) CreateMessageStream(
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", c.apiVersion)
+	httpReq.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	httpReq.Header.Set("x-app", "cli")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(httpReq)
