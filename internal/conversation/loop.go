@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -16,32 +17,32 @@ type ToolExecutor interface {
 
 // Loop is the main agentic conversation loop.
 type Loop struct {
-	client      *api.Client
-	history     *History
-	system      []api.SystemBlock
-	tools       []api.ToolDefinition
-	toolExec    ToolExecutor
-	handler     api.StreamHandler
+	client   *api.Client
+	history  *History
+	system   []api.SystemBlock
+	tools    []api.ToolDefinition
+	toolExec ToolExecutor
+	handler  api.StreamHandler
 }
 
 // LoopConfig configures the agentic loop.
 type LoopConfig struct {
-	Client      *api.Client
-	System      []api.SystemBlock
-	Tools       []api.ToolDefinition
-	ToolExec    ToolExecutor
-	Handler     api.StreamHandler
+	Client   *api.Client
+	System   []api.SystemBlock
+	Tools    []api.ToolDefinition
+	ToolExec ToolExecutor
+	Handler  api.StreamHandler
 }
 
 // NewLoop creates a new agentic conversation loop.
 func NewLoop(cfg LoopConfig) *Loop {
 	return &Loop{
-		client:  cfg.Client,
-		history: NewHistory(),
-		system:  cfg.System,
-		tools:   cfg.Tools,
+		client:   cfg.Client,
+		history:  NewHistory(),
+		system:   cfg.System,
+		tools:    cfg.Tools,
 		toolExec: cfg.ToolExec,
-		handler: cfg.Handler,
+		handler:  cfg.Handler,
 	}
 }
 
@@ -92,10 +93,14 @@ func (l *Loop) run(ctx context.Context) error {
 				continue
 			}
 
-			output, err := l.toolExec.Execute(ctx, block.Name, block.Input)
-			if err != nil {
-				result := MakeToolResult(block.ID,
-					fmt.Sprintf("Error executing tool: %v", err), true)
+			output, execErr := l.toolExec.Execute(ctx, block.Name, block.Input)
+			if execErr != nil {
+				// If tool returned output along with an error, use the output.
+				msg := output
+				if msg == "" {
+					msg = fmt.Sprintf("Error executing tool: %v", execErr)
+				}
+				result := MakeToolResult(block.ID, msg, true)
 				toolResults = append(toolResults, result)
 			} else {
 				result := MakeToolResult(block.ID, output, false)
@@ -136,4 +141,113 @@ func (h *PrintStreamHandler) OnMessageStop() {
 
 func (h *PrintStreamHandler) OnError(err error) {
 	fmt.Fprintf(os.Stderr, "\nStream error: %v\n", err)
+}
+
+// ToolAwareStreamHandler extends PrintStreamHandler with tool call display.
+// It accumulates tool input JSON from deltas and shows a summary when the
+// tool call block is complete.
+type ToolAwareStreamHandler struct {
+	toolNames map[int]string
+	jsonBufs  map[int][]byte
+}
+
+func (h *ToolAwareStreamHandler) OnMessageStart(msg api.MessageResponse) {}
+
+func (h *ToolAwareStreamHandler) OnContentBlockStart(index int, block api.ContentBlock) {
+	if block.Type == api.ContentTypeToolUse {
+		if h.toolNames == nil {
+			h.toolNames = make(map[int]string)
+			h.jsonBufs = make(map[int][]byte)
+		}
+		h.toolNames[index] = block.Name
+		h.jsonBufs[index] = nil
+	}
+}
+
+func (h *ToolAwareStreamHandler) OnTextDelta(index int, text string) {
+	fmt.Print(text)
+}
+
+func (h *ToolAwareStreamHandler) OnInputJSONDelta(index int, partialJSON string) {
+	if h.jsonBufs != nil {
+		h.jsonBufs[index] = append(h.jsonBufs[index], []byte(partialJSON)...)
+	}
+}
+
+func (h *ToolAwareStreamHandler) OnContentBlockStop(index int) {
+	if name, ok := h.toolNames[index]; ok {
+		assembled := json.RawMessage(h.jsonBufs[index])
+		fmt.Printf("\n[tool: %s]", name)
+		summary := toolInputSummary(name, assembled)
+		if summary != "" {
+			fmt.Printf(" %s", summary)
+		}
+		fmt.Println()
+		delete(h.toolNames, index)
+		delete(h.jsonBufs, index)
+	}
+}
+
+func (h *ToolAwareStreamHandler) OnMessageDelta(delta api.MessageDeltaBody, usage *api.Usage) {
+}
+
+func (h *ToolAwareStreamHandler) OnMessageStop() {
+	fmt.Println()
+}
+
+func (h *ToolAwareStreamHandler) OnError(err error) {
+	fmt.Fprintf(os.Stderr, "\nStream error: %v\n", err)
+}
+
+// toolInputSummary produces a short description from assembled tool input JSON.
+func toolInputSummary(name string, input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(input, &m); err != nil {
+		return ""
+	}
+
+	extractString := func(key string) string {
+		v, ok := m[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		json.Unmarshal(v, &s)
+		return s
+	}
+
+	switch name {
+	case "Bash":
+		if s := extractString("command"); s != "" {
+			if len(s) > 200 {
+				s = s[:197] + "..."
+			}
+			return fmt.Sprintf("$ %s", s)
+		}
+	case "FileRead":
+		if s := extractString("file_path"); s != "" {
+			return s
+		}
+	case "FileEdit":
+		if s := extractString("file_path"); s != "" {
+			return s
+		}
+	case "FileWrite":
+		if s := extractString("file_path"); s != "" {
+			return s
+		}
+	case "Glob":
+		if s := extractString("pattern"); s != "" {
+			return s
+		}
+	case "Grep":
+		if s := extractString("pattern"); s != "" {
+			return fmt.Sprintf("/%s/", s)
+		}
+	}
+	return ""
 }
