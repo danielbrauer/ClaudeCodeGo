@@ -1,780 +1,576 @@
-# Phase 6: MCP — Integration Guide
+# Phase 7: Hooks, Skills, and Advanced Features — Integration Guide
 
-Phase 6 adds Model Context Protocol (MCP) support, enabling the CLI to connect
-to external tool servers. The new `internal/mcp/` package implements a JSON-RPC
-2.0 client over stdio and SSE transports, discovers tools from MCP servers at
-startup, and registers them in the existing tool registry so they participate in
-the agentic loop identically to built-in tools.
-
-**MCP is an additive layer.** It does not modify the agentic loop, the API
-client, the streaming handler, the permission system, or the TUI. It plugs
-into the existing `Tool` interface, `Registry`, and `LoopConfig.Tools`
-pipeline. The model sees MCP tools alongside built-in tools in every API
-request, and invokes them the same way.
+Phase 7 adds hooks (lifecycle event callbacks), skills (slash-command–driven
+prompt bundles), and several advanced CLI features (output formats, pipe
+support). Unlike Phase 6, which was purely additive, Phase 7 touches the
+agentic loop, the system prompt, the TUI model, the permission system, and
+`main.go`.
 
 ---
 
-## What exists today
+## What exists today and where Phase 7 hooks in
 
-### The Tool interface (`internal/tools/registry.go`, lines 14–29)
+### 1. The agentic loop (`internal/conversation/loop.go`)
 
-Every tool — built-in or MCP — must satisfy this:
+The loop runs in `Loop.run()` (lines 98–171). The flow is:
 
-```go
-type Tool interface {
-    Name() string
-    Description() string
-    InputSchema() json.RawMessage
-    Execute(ctx context.Context, input json.RawMessage) (string, error)
-    RequiresPermission(input json.RawMessage) bool
+```
+for {
+    1. Build request with history, system, tools   (line 100–104)
+    2. Call API with streaming handler              (line 106)
+    3. Add assistant response to history            (line 116)
+    4. Check auto-compaction                        (line 119–124)
+    5. If stop_reason != tool_use → done            (line 127–131)
+    6. For each tool_use block:
+       a. Check tool exists                         (line 140)
+       b. Execute tool via toolExec.Execute()       (line 147)
+       c. Collect tool result                       (line 154–158)
+    7. Add tool results to history                  (line 167)
+    8. Notify turn complete                         (line 168)
+    9. Loop back to step 1
 }
 ```
 
-Key constraint: `Execute` returns `(string, error)`, not structured JSON. MCP
-tool wrappers must marshal their result to a string.
+**Hook firing points:**
 
-### The Registry (`internal/tools/registry.go`)
+| Hook event | Where in loop.go | Context available |
+|------------|------------------|-------------------|
+| `PreToolUse` | Before line 147 (`toolExec.Execute`) | `block.Name`, `block.Input` |
+| `PostToolUse` | After line 147, around line 159 | tool name, input, output, isError |
+| `Stop` | At line 129 (stop_reason != tool_use) | assistant response content |
 
-```go
-type Registry struct {
-    tools      map[string]Tool
-    order      []string
-    permission PermissionHandler
-}
+Phase 7 needs to add a `HookRunner` field to the `Loop` struct and call it
+at these points. The runner must be optional — `nil` means no hooks.
 
-func (r *Registry) Register(t Tool)
-func (r *Registry) Execute(ctx context.Context, name string, input []byte) (string, error)
-func (r *Registry) Definitions() []api.ToolDefinition
-```
-
-Execution pipeline:
-1. Look up tool by name
-2. If `tool.RequiresPermission(input)` → call `permission.RequestPermission()`
-3. If allowed → call `tool.Execute(ctx, input)`
-4. Return result string to the agentic loop
-
-MCP tool wrappers register like any other tool. No special-casing needed.
-
-### Tool definitions flow to the API (`internal/conversation/loop.go`)
+**Key constraint:** `UserPromptSubmit` fires before `l.history.AddUserMessage`
+(line 86). The hook can modify or reject the message. This means
+`Loop.SendMessage` needs a hook callout before line 86, or the hook fires
+in the caller (TUI model or main.go). The cleanest approach is to fire it
+in `SendMessage` itself:
 
 ```go
-req := &api.CreateMessageRequest{
-    Messages: l.history.Messages(),
-    System:   l.system,
-    Tools:    l.tools,  // ← registry.Definitions() result
+func (l *Loop) SendMessage(ctx context.Context, userMessage string) error {
+    // Phase 7: UserPromptSubmit hook.
+    if l.hooks != nil {
+        result, err := l.hooks.RunUserPromptSubmit(ctx, userMessage)
+        if err != nil { return err }
+        if result.Block { return nil }  // hook rejected the message
+        userMessage = result.Message    // hook may modify the message
+    }
+    l.history.AddUserMessage(userMessage)
+    return l.run(ctx)
 }
 ```
 
-The loop stores `tools []api.ToolDefinition` at construction. MCP tool
-definitions must be included in this slice. Since `main.go` calls
-`registry.Definitions()` after all tools (including MCP) are registered,
-this works automatically.
+**`SessionStart` hook** does not fire in the loop — it fires once in
+`main.go` after the loop is created (or in `app.Run` for the TUI path).
 
-### Sub-agent tool inheritance (`internal/tools/agent.go`, lines 52–67)
+### 2. LoopConfig (`internal/conversation/loop.go`, lines 32–41)
+
+```go
+type LoopConfig struct {
+    Client         *api.Client
+    System         []api.SystemBlock
+    Tools          []api.ToolDefinition
+    ToolExec       ToolExecutor
+    Handler        api.StreamHandler
+    History        *History
+    Compactor      *Compactor
+    OnTurnComplete func(history *History)
+}
+```
+
+Add a `Hooks` field:
+
+```go
+    Hooks          HookRunner           // Phase 7: nil = no hooks
+```
+
+This must also propagate to sub-agents. The `AgentTool` (`internal/tools/agent.go`, line 142–149) builds a `LoopConfig` for each sub-agent. Phase 7 must pass the hooks through:
+
+```go
+loopCfg := conversation.LoopConfig{
+    Client:   t.client,
+    System:   t.system,
+    Tools:    t.tools,
+    ToolExec: t.toolExec,
+    Handler:  handler,
+    History:  history,
+    Hooks:    t.hooks,  // Phase 7: propagate hooks to sub-agents
+}
+```
+
+The `AgentTool` struct needs a `hooks` field set from `main.go`.
+
+### 3. The system prompt (`internal/conversation/system_prompt.go`)
+
+`BuildSystemPrompt` (lines 16–49) assembles the prompt in this order:
+
+1. Core identity (lines 20–21)
+2. Environment info (lines 24–27)
+3. CLAUDE.md content (lines 30–33)
+4. Permission rules (lines 36–41)
+
+**Skills inject after CLAUDE.md, before permission rules.** Add a new
+parameter for skill content:
+
+```go
+func BuildSystemPrompt(cwd string, settings *config.Settings, skillContent string) []api.SystemBlock {
+    // ... existing code ...
+
+    // Phase 7: Inject skill instructions.
+    if skillContent != "" {
+        parts = append(parts, "\n# Active Skills\n\n"+skillContent)
+    }
+
+    // Permission rules (existing code at line 36)
+    // ...
+}
+```
+
+The caller in `main.go` (line 121) changes from:
+
+```go
+system := conversation.BuildSystemPrompt(cwd, settings)
+```
+
+to:
+
+```go
+skillContent := skills.LoadActiveSkills(cwd)
+system := conversation.BuildSystemPrompt(cwd, settings, skillContent)
+```
+
+### 4. Settings and hooks config (`internal/config/settings.go`)
+
+The `Settings` struct already has a `Hooks` field (line 22):
+
+```go
+Hooks json.RawMessage `json:"hooks,omitempty"` // parsed later in Phase 7
+```
+
+And `mergeSettings` already handles merge (lines 112–116):
+
+```go
+result.Hooks = base.Hooks
+if overlay.Hooks != nil {
+    result.Hooks = overlay.Hooks
+}
+```
+
+**Phase 7 must define the hook config schema and parse it.** Expected format:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "type": "command", "command": "./scripts/pre-tool.sh" }
+    ],
+    "PostToolUse": [
+      { "type": "command", "command": "echo done" }
+    ],
+    "UserPromptSubmit": [
+      { "type": "prompt", "prompt": "Check for sensitive data" }
+    ],
+    "SessionStart": [
+      { "type": "command", "command": "./scripts/setup.sh" }
+    ],
+    "Stop": [
+      { "type": "command", "command": "./scripts/cleanup.sh" }
+    ]
+  }
+}
+```
+
+Create an `internal/hooks/` package with:
+
+```go
+type HookConfig struct {
+    PreToolUse        []HookDef `json:"PreToolUse,omitempty"`
+    PostToolUse       []HookDef `json:"PostToolUse,omitempty"`
+    UserPromptSubmit  []HookDef `json:"UserPromptSubmit,omitempty"`
+    SessionStart      []HookDef `json:"SessionStart,omitempty"`
+    PermissionRequest []HookDef `json:"PermissionRequest,omitempty"`
+    Stop              []HookDef `json:"Stop,omitempty"`
+}
+
+type HookDef struct {
+    Type    string `json:"type"`    // "command", "prompt", "agent"
+    Command string `json:"command,omitempty"`
+    Prompt  string `json:"prompt,omitempty"`
+}
+```
+
+Parse from `settings.Hooks` in `main.go` after loading settings:
+
+```go
+var hookConfig hooks.HookConfig
+if settings.Hooks != nil {
+    json.Unmarshal(settings.Hooks, &hookConfig)
+}
+hookRunner := hooks.NewRunner(hookConfig)
+```
+
+### 5. CLAUDE.md loading pattern (`internal/config/claudemd.go`)
+
+Skills follow the same multi-location discovery pattern as CLAUDE.md:
+
+| Location | Purpose |
+|----------|---------|
+| `~/.claude/skills/` | User-level skills (all projects) |
+| `.claude/skills/` | Project-level skills |
+
+Each skill is a markdown file with YAML frontmatter:
+
+```markdown
+---
+name: commit
+description: Create a git commit
+trigger: /commit
+---
+
+# Commit Skill
+
+Instructions for creating commits...
+```
+
+The `LoadClaudeMD` function (lines 17–51) shows the pattern to follow:
+directory listing, file reading, content assembly. Skills add frontmatter
+parsing (use `strings.SplitN(content, "---", 3)` to extract it) and
+slash-command registration.
+
+### 6. Permission system (`internal/config/permissions.go`)
+
+The `RuleBasedPermissionHandler.RequestPermission` method (lines 36–48)
+is where `PermissionRequest` hooks fire:
+
+```go
+func (h *RuleBasedPermissionHandler) RequestPermission(
+    ctx context.Context, toolName string, input json.RawMessage,
+) (bool, error) {
+    // Phase 7: Fire PermissionRequest hook here.
+    // Hook can observe or override the decision.
+
+    action := h.matchRule(toolName, input)
+    switch action {
+    case "allow":
+        return true, nil
+    case "deny":
+        return false, nil
+    default:
+        return h.fallback.RequestPermission(ctx, toolName, input)
+    }
+}
+```
+
+The cleanest approach: wrap the `RuleBasedPermissionHandler` with a
+`HookAwarePermissionHandler` that calls hooks before/after the inner handler.
+This avoids modifying `permissions.go` directly:
+
+```go
+type HookAwarePermissionHandler struct {
+    inner   config.PermissionHandler
+    hooks   *hooks.Runner
+}
+
+func (h *HookAwarePermissionHandler) RequestPermission(
+    ctx context.Context, toolName string, input json.RawMessage,
+) (bool, error) {
+    if h.hooks != nil {
+        h.hooks.RunPermissionRequest(ctx, toolName, input)
+    }
+    return h.inner.RequestPermission(ctx, toolName, input)
+}
+```
+
+### 7. Permission handlers (`internal/tools/permission.go`)
+
+Two existing handlers:
+
+- `TerminalPermissionHandler` (line 13) — prompts via stdin (print mode)
+- `AlwaysAllowPermissionHandler` (line 84) — auto-approves (scripting)
+
+Phase 7 does not need to modify these. The hook wrapping happens at a
+higher level (see section 6).
+
+### 8. Stream handlers (`internal/tui/stream.go` and `internal/conversation/loop.go`)
+
+The `api.StreamHandler` interface (defined in `internal/api/streaming.go`, lines 77–86):
+
+```go
+type StreamHandler interface {
+    OnMessageStart(msg MessageResponse)
+    OnContentBlockStart(index int, block ContentBlock)
+    OnTextDelta(index int, text string)
+    OnInputJSONDelta(index int, partialJSON string)
+    OnContentBlockStop(index int)
+    OnMessageDelta(delta MessageDeltaBody, usage *Usage)
+    OnMessageStop()
+    OnError(err error)
+}
+```
+
+Three existing implementations:
+
+| Handler | Location | Purpose |
+|---------|----------|---------|
+| `PrintStreamHandler` | `loop.go:180` | Plain text to stdout |
+| `ToolAwareStreamHandler` | `loop.go:207` | Text + tool summaries to stdout |
+| `TUIStreamHandler` | `tui/stream.go:14` | Events → Bubble Tea messages |
+
+**Phase 7 adds two new handlers** for `--output-format`:
+
+| Handler | Format | Behavior |
+|---------|--------|----------|
+| `JSONStreamHandler` | `json` | Collect entire response, emit one JSON object at the end |
+| `StreamJSONStreamHandler` | `stream-json` | Emit one JSON line per streaming event as it arrives |
+
+These are selected in `main.go` based on the `--output-format` flag:
+
+```go
+outputFormat := flag.String("output-format", "text", "Output format: text, json, stream-json")
+// ...
+switch *outputFormat {
+case "json":
+    loop.SetHandler(NewJSONStreamHandler(os.Stdout))
+case "stream-json":
+    loop.SetHandler(NewStreamJSONStreamHandler(os.Stdout))
+default:
+    // existing behavior (ToolAwareStreamHandler or TUIStreamHandler)
+}
+```
+
+### 9. TUI model (`internal/tui/model.go`)
+
+The `handleSubmit` method (lines 291–342) processes user input:
+
+```go
+func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
+    // Echo to scrollback (line 295)
+    // Check slash commands (line 299–328)
+    // Otherwise: send to loop (line 331–341)
+}
+```
+
+**`UserPromptSubmit` hook in TUI mode:** The hook needs to fire after the
+user presses Enter but before the message is sent to the loop. If the loop
+owns the hook (recommended — see section 1), the TUI doesn't need to change.
+The TUI calls `m.loop.SendMessage(ctx, text)` at line 337, and the hook
+fires inside `SendMessage`.
+
+**Skill slash commands:** Skills register slash commands in the `slashRegistry`.
+The model already has `slashReg *slashRegistry` (line 42). Phase 7 needs to:
+
+1. Load skills at startup
+2. For each skill with a `trigger: /name` frontmatter, register a `SlashCommand`
+3. Pass skill content to the slash registry or the model
+
+The cleanest approach: `newSlashRegistry` could accept a list of skill
+definitions, or the model could receive them and register after creation.
+Since `newSlashRegistry` is called in `newModel` (line 85), skills can be
+passed via the `newModel` parameters or as a separate `RegisterSkillCommands`
+method on the model.
+
+### 10. main.go (`cmd/claude/main.go`)
+
+Phase 7 touches `main.go` in several places. Here is the execution flow
+with hook/skill callout points marked:
+
+```
+Line  26: Parse CLI flags
+          ← Add: --output-format, --pipe (stdin support)
+Line  90: Load settings
+          ← After: Parse hookConfig from settings.Hooks
+Line 121: Build system prompt
+          ← Change: Pass skill content to BuildSystemPrompt
+Line 123: Set up permission handler
+          ← After: Wrap with HookAwarePermissionHandler
+Line 142: Create tool registry and register tools
+Line 192: Create AgentTool
+          ← Change: Pass hookRunner to AgentTool
+Line 244: Create Loop
+          ← Change: Pass hookRunner in LoopConfig
+          ← After: Fire SessionStart hook
+Line 270: Print mode branch
+          ← Change: Handle --output-format (json, stream-json)
+          ← Add: Pipe/stdin support (read prompt from stdin if !isatty)
+Line 282: TUI mode branch
+          ← Change: Pass skills to TUI for slash command registration
+```
+
+### 11. AgentTool (`internal/tools/agent.go`)
+
+The `AgentTool` struct (lines 39–49):
 
 ```go
 type AgentTool struct {
-    tools    []api.ToolDefinition      // snapshot of parent's definitions
-    toolExec conversation.ToolExecutor  // parent's registry (shared)
+    client   *api.Client
+    system   []api.SystemBlock
+    tools    []api.ToolDefinition
+    toolExec conversation.ToolExecutor
+    bgStore  *BackgroundTaskStore
+    mu       sync.Mutex
+    agents   map[string]*agentState
+    nextID   int
 }
 ```
 
-Sub-agents receive the parent's tool definitions and registry reference.
-MCP tools registered before the `AgentTool` is created will be visible to
-sub-agents automatically, because `registry.Definitions()` is called at
-agent creation time (line 167 of `main.go`).
-
-### Configuration (`internal/config/settings.go`)
+**Add a `hooks` field** so sub-agents inherit the hook runner:
 
 ```go
-type Settings struct {
-    Permissions []PermissionRule  `json:"permissions,omitempty"`
-    Model       string            `json:"model,omitempty"`
-    Env         map[string]string `json:"env,omitempty"`
-    Hooks       json.RawMessage   `json:"hooks,omitempty"`
-    Sandbox     json.RawMessage   `json:"sandbox,omitempty"`
-}
+    hooks    conversation.HookRunner  // Phase 7
 ```
 
-MCP server configuration lives in separate `.mcp.json` files (not in
-`settings.json`). Phase 6 adds a loader for these files and a new
-`MCPServers` field or a standalone config type.
+`NewAgentTool` (line 52) gains a `hooks` parameter from `main.go`.
+`Execute` (line 142–149) passes it to the sub-agent's `LoopConfig`.
 
-### Permission rules (`internal/config/permissions.go`)
+---
 
-Permission rules use glob-like patterns:
+## New packages and files
+
+### `internal/hooks/`
+
+| File | Purpose |
+|------|---------|
+| `types.go` | `HookConfig`, `HookDef`, `HookResult`, event type constants |
+| `runner.go` | `Runner` — executes hooks: runs shell commands, injects prompts, spawns agents |
+| `runner_test.go` | Tests for hook execution |
+
+The `Runner` implements a `HookRunner` interface that the loop calls:
 
 ```go
-type PermissionRule struct {
-    Tool    string `json:"tool"`
-    Pattern string `json:"pattern,omitempty"`
-    Action  string `json:"action"` // "allow", "deny", "ask"
+// Defined in internal/conversation/ to avoid import cycles.
+type HookRunner interface {
+    RunPreToolUse(ctx context.Context, toolName string, input json.RawMessage) error
+    RunPostToolUse(ctx context.Context, toolName string, input json.RawMessage, output string, isError bool) error
+    RunUserPromptSubmit(ctx context.Context, message string) (HookSubmitResult, error)
+    RunSessionStart(ctx context.Context) error
+    RunStop(ctx context.Context) error
+    RunPermissionRequest(ctx context.Context, toolName string, input json.RawMessage) error
+}
+
+type HookSubmitResult struct {
+    Block   bool   // true = reject the message
+    Message string // possibly modified message
 }
 ```
 
-MCP tools need a naming convention that works with existing pattern matching.
-The convention is `mcp__<server>__<tool>` for tool names (matching the
-official CLI), which allows rules like:
+Hook execution for command hooks:
+1. Set environment variables: `TOOL_NAME`, `TOOL_INPUT`, `TOOL_OUTPUT`, `USER_MESSAGE`
+2. Run the command via `os/exec`
+3. Check exit code: 0 = continue, non-zero = block/error
+4. Capture stdout as hook output (for prompt injection or feedback)
 
-```json
-{"tool": "mcp__github__*", "action": "allow"}
+### `internal/skills/`
+
+| File | Purpose |
+|------|---------|
+| `loader.go` | Discover and parse skill files from `~/.claude/skills/` and `.claude/skills/` |
+| `types.go` | `Skill` struct (name, description, trigger, content) |
+| `loader_test.go` | Tests for skill loading |
+
+```go
+type Skill struct {
+    Name        string
+    Description string
+    Trigger     string // slash command name, e.g. "/commit"
+    Content     string // markdown body (instructions/prompt)
+    FilePath    string // source file for debugging
+}
+
+func LoadSkills(cwd string) []Skill
+func ActiveSkillContent(skills []Skill) string  // for system prompt injection
 ```
 
 ---
 
-## MCP tool schemas from `sdk-tools.d.ts`
+## Output format handlers
 
-The official CLI defines these MCP-related tools:
+### JSONStreamHandler
 
-### McpInput / McpOutput
-
-```typescript
-// Input: arbitrary — each MCP tool has its own schema
-export interface McpInput {
-  [k: string]: unknown;
-}
-
-// Output: string (MCP tool execution result)
-export type McpOutput = string;
-```
-
-Each discovered MCP tool becomes a separate `ToolDefinition` with its own
-`Name`, `Description`, and `InputSchema` from the server. The model calls
-them by name like any other tool.
-
-### ListMcpResources
-
-```typescript
-export interface ListMcpResourcesInput {
-  server?: string;  // optional filter
-}
-
-export type ListMcpResourcesOutput = {
-  uri: string;
-  name: string;
-  mimeType?: string;
-  description?: string;
-  server: string;
-}[];
-```
-
-### ReadMcpResource
-
-```typescript
-export interface ReadMcpResourceInput {
-  server: string;
-  uri: string;
-}
-
-export interface ReadMcpResourceOutput {
-  contents: {
-    uri: string;
-    mimeType?: string;
-    text?: string;
-  }[];
-}
-```
-
-### SubscribeMcpResource / UnsubscribeMcpResource
-
-```typescript
-export interface SubscribeMcpResourceInput {
-  server: string;
-  uri: string;
-  reason?: string;
-}
-export interface SubscribeMcpResourceOutput {
-  subscribed: boolean;
-  subscriptionId: string;
-}
-
-export interface UnsubscribeMcpResourceInput {
-  server?: string;
-  uri?: string;
-  subscriptionId?: string;
-}
-export interface UnsubscribeMcpResourceOutput {
-  unsubscribed: boolean;
-}
-```
-
-### SubscribePolling / UnsubscribePolling
-
-```typescript
-export interface SubscribePollingInput {
-  type: "tool" | "resource";
-  server: string;
-  toolName?: string;
-  arguments?: { [k: string]: unknown };
-  uri?: string;
-  intervalMs: number;  // minimum 1000ms, default 5000ms
-  reason?: string;
-}
-export interface SubscribePollingOutput {
-  subscribed: boolean;
-  subscriptionId: string;
-}
-
-export interface UnsubscribePollingInput {
-  subscriptionId?: string;
-  server?: string;
-  target?: string;
-}
-export interface UnsubscribePollingOutput {
-  unsubscribed: boolean;
-}
-```
-
----
-
-## Architecture of `internal/mcp/`
-
-### Proposed file structure
-
-```
-internal/mcp/
-├── client.go        # MCPClient interface, JSON-RPC request/response
-├── stdio.go         # stdio transport (subprocess management)
-├── sse.go           # SSE transport (HTTP streaming)
-├── types.go         # JSON-RPC 2.0 types, MCP protocol types
-├── config.go        # .mcp.json loading from project and user dirs
-├── manager.go       # Server lifecycle: init → discover → register → shutdown
-└── tools.go         # MCPToolWrapper, ListMcpResources, ReadMcpResource, etc.
-```
-
-### Core types (`internal/mcp/types.go`)
+Collects the full response and emits a single JSON object when done:
 
 ```go
-// JSON-RPC 2.0
-
-type JSONRPCRequest struct {
-    JSONRPC string          `json:"jsonrpc"`
-    ID      int64           `json:"id"`
-    Method  string          `json:"method"`
-    Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type JSONRPCResponse struct {
-    JSONRPC string          `json:"jsonrpc"`
-    ID      int64           `json:"id"`
-    Result  json.RawMessage `json:"result,omitempty"`
-    Error   *JSONRPCError   `json:"error,omitempty"`
-}
-
-type JSONRPCError struct {
-    Code    int             `json:"code"`
-    Message string          `json:"message"`
-    Data    json.RawMessage `json:"data,omitempty"`
-}
-
-// MCP protocol
-
-type ServerConfig struct {
-    Command string            `json:"command"`
-    Args    []string          `json:"args,omitempty"`
-    Env     map[string]string `json:"env,omitempty"`
-    URL     string            `json:"url,omitempty"` // for SSE transport
-}
-
-type MCPToolDef struct {
-    Name        string          `json:"name"`
-    Description string          `json:"description,omitempty"`
-    InputSchema json.RawMessage `json:"inputSchema"`
-}
-
-type MCPResource struct {
-    URI         string `json:"uri"`
-    Name        string `json:"name"`
-    MIMEType    string `json:"mimeType,omitempty"`
-    Description string `json:"description,omitempty"`
-}
-
-type MCPResourceContent struct {
-    URI      string `json:"uri"`
-    MIMEType string `json:"mimeType,omitempty"`
-    Text     string `json:"text,omitempty"`
+type JSONStreamHandler struct {
+    writer    io.Writer
+    content   []api.ContentBlock
+    usage     api.Usage
+    model     string
+    stopReason string
 }
 ```
 
-### The Transport interface (`internal/mcp/client.go`)
+On `OnMessageStop`, marshals and writes:
 
-```go
-type Transport interface {
-    // Send sends a JSON-RPC request and returns the response.
-    Send(ctx context.Context, req *JSONRPCRequest) (*JSONRPCResponse, error)
-
-    // Close shuts down the transport.
-    Close() error
-}
-```
-
-Two implementations:
-
-**StdioTransport** (`stdio.go`): Launches a subprocess via `os/exec.Cmd`,
-writes JSON-RPC requests to stdin, reads responses from stdout. Each
-request is a single line of JSON followed by `\n`. Responses are read
-line-by-line. The subprocess's stderr is captured for error diagnostics.
-
-**SSETransport** (`sse.go`): Connects to an HTTP endpoint. Sends requests
-via POST. Reads streaming responses via Server-Sent Events. The event
-stream carries JSON-RPC responses as `data:` fields.
-
-### The MCPClient (`internal/mcp/client.go`)
-
-```go
-type MCPClient struct {
-    transport  Transport
-    serverName string
-    nextID     int64
-    mu         sync.Mutex
-
-    // Capabilities negotiated during initialization.
-    capabilities ServerCapabilities
-}
-
-func NewMCPClient(serverName string, transport Transport) *MCPClient
-
-func (c *MCPClient) Initialize(ctx context.Context) error
-func (c *MCPClient) ListTools(ctx context.Context) ([]MCPToolDef, error)
-func (c *MCPClient) CallTool(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
-func (c *MCPClient) ListResources(ctx context.Context) ([]MCPResource, error)
-func (c *MCPClient) ReadResource(ctx context.Context, uri string) ([]MCPResourceContent, error)
-func (c *MCPClient) Close() error
-```
-
-### The MCP lifecycle
-
-```
-1. Load .mcp.json config files
-2. For each server config:
-   a. Create transport (stdio or SSE based on config fields)
-   b. Create MCPClient
-   c. Call client.Initialize() — JSON-RPC "initialize" method
-   d. Send "notifications/initialized" notification
-   e. Call client.ListTools() — JSON-RPC "tools/list" method
-   f. For each discovered tool, wrap in MCPToolWrapper
-   g. Register wrapper in the tool registry
-3. Also register the built-in MCP management tools:
-   - ListMcpResources
-   - ReadMcpResource
-   - SubscribeMcpResource / UnsubscribeMcpResource
-   - SubscribePolling / UnsubscribePolling
-4. On CLI exit, call client.Close() for each server
-```
-
----
-
-## Integration with existing code
-
-### MCPToolWrapper (`internal/mcp/tools.go`)
-
-This is the bridge between MCP and the `tools.Tool` interface:
-
-```go
-type MCPToolWrapper struct {
-    serverName  string
-    toolName    string
-    displayName string       // "mcp__<server>__<tool>"
-    description string
-    inputSchema json.RawMessage
-    client      *MCPClient
-}
-```
-
-Implementing the `Tool` interface:
-
-```go
-func (w *MCPToolWrapper) Name() string {
-    return w.displayName  // e.g. "mcp__github__create_issue"
-}
-
-func (w *MCPToolWrapper) Description() string {
-    return w.description
-}
-
-func (w *MCPToolWrapper) InputSchema() json.RawMessage {
-    return w.inputSchema  // pass through from server's tools/list
-}
-
-func (w *MCPToolWrapper) RequiresPermission(_ json.RawMessage) bool {
-    return true  // MCP tools always require permission
-}
-
-func (w *MCPToolWrapper) Execute(ctx context.Context, input json.RawMessage) (string, error) {
-    result, err := w.client.CallTool(ctx, w.toolName, input)
-    if err != nil {
-        return "", err
-    }
-    // Result is JSON — marshal to string for the Tool interface.
-    return string(result), nil
-}
-```
-
-### Manager (`internal/mcp/manager.go`)
-
-Coordinates server lifecycle and exposes a clean API for `main.go`:
-
-```go
-type Manager struct {
-    clients map[string]*MCPClient  // keyed by server name
-    mu      sync.Mutex
-}
-
-func NewManager() *Manager
-
-// StartServers loads config, connects to servers, discovers tools,
-// and registers them in the provided registry.
-func (m *Manager) StartServers(ctx context.Context, configs map[string]ServerConfig, registry *tools.Registry) error
-
-// Shutdown gracefully closes all server connections.
-func (m *Manager) Shutdown()
-
-// Servers returns the list of connected server names (for /mcp status).
-func (m *Manager) Servers() []string
-
-// Client returns the client for a named server (for resource tools).
-func (m *Manager) Client(name string) (*MCPClient, bool)
-```
-
-### Config loading (`internal/mcp/config.go`)
-
-```go
-type MCPConfig struct {
-    MCPServers map[string]ServerConfig `json:"mcpServers"`
-}
-
-// LoadMCPConfig loads and merges .mcp.json from project and user dirs.
-func LoadMCPConfig(cwd string) (*MCPConfig, error)
-```
-
-Load order (lower to higher priority, higher wins per server name):
-1. `~/.mcp.json` (user-level)
-2. `.mcp.json` (project-level, in cwd)
-
-The merge is per server name: project-level overrides user-level for the
-same server name. Servers from both levels that don't conflict are included.
-
-### Changes to `cmd/claude/main.go`
-
-Insert MCP initialization **after** built-in tool registration and
-**before** the `AgentTool` creation:
-
-```go
-// ... existing tool registration (lines 141–164) ...
-
-// Phase 6: MCP server initialization.
-mcpConfig, err := mcp.LoadMCPConfig(cwd)
-if err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: MCP config error: %v\n", err)
-}
-
-var mcpManager *mcp.Manager
-if mcpConfig != nil && len(mcpConfig.MCPServers) > 0 {
-    mcpManager = mcp.NewManager()
-    if err := mcpManager.StartServers(ctx, mcpConfig.MCPServers, registry); err != nil {
-        fmt.Fprintf(os.Stderr, "Warning: MCP startup error: %v\n", err)
-    }
-    defer mcpManager.Shutdown()
-
-    // Register MCP management tools (these need the manager reference).
-    registry.Register(mcp.NewListMcpResourcesTool(mcpManager))
-    registry.Register(mcp.NewReadMcpResourceTool(mcpManager))
-    registry.Register(mcp.NewSubscribeMcpResourceTool(mcpManager))
-    registry.Register(mcp.NewUnsubscribeMcpResourceTool(mcpManager))
-    registry.Register(mcp.NewSubscribePollingTool(mcpManager))
-    registry.Register(mcp.NewUnsubscribePollingTool(mcpManager))
-}
-
-// Agent tool registered last — now includes MCP tools in definitions.
-agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
-registry.Register(agentTool)
-```
-
-**Ordering matters.** MCP tools must be registered before `AgentTool` so
-that `registry.Definitions()` includes them when building the sub-agent's
-tool list.
-
-### Changes to `internal/tui/slash.go`
-
-Add an `/mcp` command to the slash registry:
-
-```go
-r.register(SlashCommand{
-    Name:        "mcp",
-    Description: "Show MCP server status",
-    Execute: func(m *model) string {
-        // m would need a reference to the mcpManager
-        // or this can be a simple status listing
-        return "MCP server status (not yet implemented)"
-    },
-})
-```
-
-To make the MCP manager accessible to the TUI, add it to `AppConfig`:
-
-```go
-type AppConfig struct {
-    Loop       *conversation.Loop
-    Session    *session.Session
-    SessStore  *session.Store
-    Version    string
-    Model      string
-    PrintMode  bool
-    MCPManager interface{}  // *mcp.Manager, interface{} to avoid import cycle
-}
-```
-
-### Permission rules for MCP tools
-
-MCP tools use the naming convention `mcp__<server>__<tool>`. Permission
-rules can match these with glob patterns:
-
-```json
-[
-  {"tool": "mcp__github__*", "action": "allow"},
-  {"tool": "mcp__*", "action": "ask"}
-]
-```
-
-The existing `RuleBasedPermissionHandler` in `config/permissions.go` already
-supports glob matching via doublestar, so this works without modification.
-
----
-
-## JSON-RPC 2.0 protocol details
-
-### Initialize handshake
-
-Request:
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {},
-    "clientInfo": {
-      "name": "claude-code",
-      "version": "1.0.0"
-    }
-  }
+  "type": "message",
+  "role": "assistant",
+  "content": [{"type": "text", "text": "..."}],
+  "model": "claude-sonnet-4-20250514",
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 100, "output_tokens": 50}
 }
 ```
 
-Response:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "protocolVersion": "2024-11-05",
-    "capabilities": {
-      "tools": {},
-      "resources": {}
-    },
-    "serverInfo": {
-      "name": "server-name",
-      "version": "1.0.0"
-    }
-  }
-}
-```
+### StreamJSONStreamHandler
 
-Followed by the client sending a notification (no `id`):
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "notifications/initialized"
-}
-```
-
-### Tool discovery
-
-Request:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/list",
-  "params": {}
-}
-```
-
-Response:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "tools": [
-      {
-        "name": "create_issue",
-        "description": "Create a GitHub issue",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "title": {"type": "string"},
-            "body": {"type": "string"}
-          },
-          "required": ["title"]
-        }
-      }
-    ]
-  }
-}
-```
-
-### Tool execution
-
-Request:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "method": "tools/call",
-  "params": {
-    "name": "create_issue",
-    "arguments": {"title": "Bug report", "body": "..."}
-  }
-}
-```
-
-Response:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "result": {
-    "content": [
-      {"type": "text", "text": "Issue #42 created successfully"}
-    ]
-  }
-}
-```
-
-The `tools/call` result contains a `content` array with text blocks.
-`MCPToolWrapper.Execute` should extract and concatenate the text content.
-
-### Resource operations
-
-`resources/list` and `resources/read` follow the same request/response
-pattern. These are exposed via the `ListMcpResources` and `ReadMcpResource`
-built-in tools, not via MCP tool wrappers.
-
----
-
-## Transport implementation details
-
-### stdio transport (`internal/mcp/stdio.go`)
+Emits one JSON line per event:
 
 ```go
-type StdioTransport struct {
-    cmd    *exec.Cmd
-    stdin  io.WriteCloser
-    stdout *bufio.Scanner
-    stderr bytes.Buffer
-    mu     sync.Mutex
+type StreamJSONStreamHandler struct {
+    writer io.Writer
 }
-
-func NewStdioTransport(command string, args []string, env map[string]string) (*StdioTransport, error)
 ```
 
-Implementation notes:
-- Start the subprocess with `exec.CommandContext` so the process is killed
-  on context cancellation
-- Set the working directory to the project directory
-- Merge server env vars with the current environment (server's `env` field
-  overrides)
-- Write requests as single JSON lines to stdin
-- Read responses as single JSON lines from stdout (buffered scanner)
-- Capture stderr for error diagnostics
-- Use a mutex around send/receive to serialize requests (MCP servers may
-  not support concurrent requests)
-- Close() kills the subprocess gracefully (SIGTERM, then SIGKILL after
-  timeout)
+Each event is written immediately as a line:
 
-### SSE transport (`internal/mcp/sse.go`)
+```json
+{"type":"message_start","message":{...}}
+{"type":"content_block_start","index":0,"content_block":{...}}
+{"type":"text_delta","index":0,"text":"Hello"}
+{"type":"message_stop"}
+```
+
+Both handlers live in a new file, e.g. `internal/conversation/json_handlers.go`,
+since they implement `api.StreamHandler` and are used in both print mode and
+pipe mode.
+
+---
+
+## Pipe/stdin support
+
+When stdin is not a terminal (piped input), read the prompt from stdin:
 
 ```go
-type SSETransport struct {
-    baseURL string
-    client  *http.Client
-    mu      sync.Mutex
-}
+import "golang.org/x/term"
 
-func NewSSETransport(url string) *SSETransport
-```
-
-Implementation notes:
-- POST requests to the server's endpoint
-- Read SSE responses from a long-lived GET connection
-- Parse SSE events the same way as `api/streaming.go` (can share or
-  duplicate the parser)
-- Handle reconnection on connection drop
-
-### Choosing transport
-
-The config determines which transport to use:
-
-```go
-func transportForConfig(cfg ServerConfig, cwd string) (Transport, error) {
-    if cfg.URL != "" {
-        return NewSSETransport(cfg.URL), nil
-    }
-    return NewStdioTransport(cfg.Command, cfg.Args, cfg.Env, cwd)
+if !term.IsTerminal(int(os.Stdin.Fd())) {
+    // Read prompt from stdin pipe.
+    data, _ := io.ReadAll(os.Stdin)
+    initialPrompt = string(data)
+    *printMode = true  // force print mode when piped
 }
 ```
 
-If `url` is set → SSE transport. Otherwise → stdio transport using
-`command` and `args`.
+This goes in `main.go` after CLI flag parsing, before the print mode branch.
+Combined with `--output-format json`, this enables Unix pipeline workflows:
+
+```bash
+echo "Explain this code" | claude -p --output-format json
+cat file.go | claude -p "Review this code"
+```
 
 ---
 
-## Built-in MCP management tools
+## CLI flag additions
 
-These are standard `tools.Tool` implementations that live in
-`internal/mcp/tools.go` and delegate to the `Manager`:
+| Flag | Type | Default | Purpose |
+|------|------|---------|---------|
+| `--output-format` | string | `"text"` | Output format: `text`, `json`, `stream-json` |
 
-| Tool | Purpose | Needs |
-|------|---------|-------|
-| `ListMcpResources` | List resources across all servers | `Manager.Client()` for each server |
-| `ReadMcpResource` | Read a resource by server + URI | `Manager.Client(server)` |
-| `SubscribeMcpResource` | Subscribe to resource changes | `Manager.Client(server)` + subscription store |
-| `UnsubscribeMcpResource` | Unsubscribe from changes | Subscription store |
-| `SubscribePolling` | Poll a tool or resource on interval | Goroutine manager for periodic calls |
-| `UnsubscribePolling` | Stop polling | Cancel the polling goroutine |
-
-None of these tools require permission (they're resource/subscription
-management, not arbitrary execution). The discovered MCP tools themselves
-do require permission (set in `MCPToolWrapper.RequiresPermission`).
-
----
-
-## Error handling
-
-| Failure | Behavior |
-|---------|----------|
-| `.mcp.json` missing | No MCP servers loaded; silent (not an error) |
-| `.mcp.json` parse error | Warning to stderr; continue without MCP |
-| Server subprocess fails to start | Warning; skip that server, continue with others |
-| `initialize` handshake fails | Warning; skip that server |
-| `tools/list` fails | Warning; server registered but with no tools |
-| Tool execution fails | Return error to agentic loop (same as built-in tools) |
-| Server crashes mid-session | Tool execution returns error; no automatic restart |
-| Context cancelled (Ctrl+C) | Subprocess killed via context; graceful shutdown |
-
----
-
-## Dependencies
-
-**No new external dependencies.** Everything uses the standard library:
-- `encoding/json` for JSON-RPC marshaling
-- `os/exec` for subprocess management
-- `bufio` for line-based stdio I/O
-- `net/http` for SSE transport
-- `sync` for mutex around transport access
-- `context` for cancellation
+No new flags are needed for hooks or skills — they're configuration-driven
+via `settings.json` and skill files.
 
 ---
 
@@ -782,59 +578,202 @@ do require permission (set in `MCPToolWrapper.RequiresPermission`).
 
 | File | Change |
 |------|--------|
-| `internal/mcp/types.go` | **New.** JSON-RPC 2.0 types, MCP protocol types |
-| `internal/mcp/client.go` | **New.** Transport interface, MCPClient |
-| `internal/mcp/stdio.go` | **New.** Subprocess-based stdio transport |
-| `internal/mcp/sse.go` | **New.** HTTP SSE transport |
-| `internal/mcp/config.go` | **New.** `.mcp.json` loader |
-| `internal/mcp/manager.go` | **New.** Server lifecycle management |
-| `internal/mcp/tools.go` | **New.** MCPToolWrapper + resource/subscription tools |
-| `cmd/claude/main.go` | **Modify.** Add MCP initialization between tool registration and AgentTool creation |
-| `internal/tui/slash.go` | **Modify.** Add `/mcp` command |
-| `internal/tui/app.go` | **Modify.** Add MCPManager to AppConfig (optional) |
+| `internal/hooks/types.go` | **New.** Hook config types, event constants |
+| `internal/hooks/runner.go` | **New.** Hook execution (command, prompt, agent) |
+| `internal/hooks/runner_test.go` | **New.** Hook runner tests |
+| `internal/skills/types.go` | **New.** Skill struct |
+| `internal/skills/loader.go` | **New.** Skill discovery and parsing |
+| `internal/skills/loader_test.go` | **New.** Skill loader tests |
+| `internal/conversation/loop.go` | **Modify.** Add `HookRunner` to `Loop`, fire PreToolUse/PostToolUse/UserPromptSubmit/Stop hooks |
+| `internal/conversation/loop.go` | **Modify.** Add `Hooks` field to `LoopConfig` |
+| `internal/conversation/system_prompt.go` | **Modify.** Accept skill content parameter |
+| `internal/conversation/json_handlers.go` | **New.** `JSONStreamHandler`, `StreamJSONStreamHandler` |
+| `internal/config/settings.go` | No structural changes needed (Hooks field already exists) |
+| `internal/tools/agent.go` | **Modify.** Add `hooks` field, propagate to sub-agent LoopConfig |
+| `internal/tui/slash.go` | **Modify.** Register skill-based slash commands |
+| `internal/tui/model.go` | **Modify.** Accept skills for slash command registration |
+| `internal/tui/app.go` | **Modify.** Pass skills to model, fire SessionStart hook |
+| `cmd/claude/main.go` | **Modify.** Parse hooks, load skills, add --output-format, pipe support, wire hooks into loop and agent |
 
-No changes needed to:
-- `internal/tools/registry.go` — MCP tools use the existing `Tool` interface
-- `internal/conversation/loop.go` — the loop sees MCP tools like any other
-- `internal/api/` — no API changes
-- `internal/config/permissions.go` — glob matching already handles MCP tool name patterns
-- `internal/tui/model.go` — MCP tool calls render through existing stream handler
+### Files NOT changed
+
+| File | Why |
+|------|-----|
+| `internal/tools/registry.go` | Hooks don't change tool dispatch — they wrap it |
+| `internal/config/permissions.go` | PermissionRequest hook wraps the handler, doesn't modify it |
+| `internal/api/` | No API changes |
+| `internal/mcp/` | MCP is independent of hooks/skills |
+| `internal/session/` | Session format doesn't change |
+| `internal/tui/stream.go` | TUI stream handler is unaffected; output format handlers are separate |
+
+---
+
+## Ordering and dependencies
+
+```
+1. internal/hooks/types.go       — no deps, define types first
+2. internal/hooks/runner.go      — depends on types.go
+3. internal/skills/types.go      — no deps
+4. internal/skills/loader.go     — depends on types.go, os, filepath
+5. conversation/loop.go          — add HookRunner interface + firing points
+6. conversation/system_prompt.go — add skill content parameter
+7. conversation/json_handlers.go — new StreamHandler implementations
+8. tools/agent.go                — add hooks propagation
+9. tui/slash.go                  — register skill commands
+10. tui/model.go + app.go        — pass skills, fire SessionStart
+11. cmd/claude/main.go           — wire everything together
+```
+
+Items 1–4 can be done in parallel. Items 5–8 can be done in parallel.
+Items 9–10 can be done together. Item 11 must be last.
+
+---
+
+## How hooks fire in the loop — detailed walkthrough
+
+### PreToolUse / PostToolUse
+
+In `Loop.run()`, the tool execution block (lines 133–160) becomes:
+
+```go
+for _, block := range resp.Content {
+    if block.Type != api.ContentTypeToolUse {
+        continue
+    }
+
+    // Phase 7: PreToolUse hook.
+    if l.hooks != nil {
+        if err := l.hooks.RunPreToolUse(ctx, block.Name, block.Input); err != nil {
+            result := MakeToolResult(block.ID,
+                fmt.Sprintf("Hook blocked tool execution: %v", err), true)
+            toolResults = append(toolResults, result)
+            continue
+        }
+    }
+
+    // Existing tool execution (line 147).
+    output, execErr := l.toolExec.Execute(ctx, block.Name, block.Input)
+
+    // Phase 7: PostToolUse hook.
+    if l.hooks != nil {
+        l.hooks.RunPostToolUse(ctx, block.Name, block.Input, output, execErr != nil)
+    }
+
+    // Existing result handling (lines 148–159).
+    // ...
+}
+```
+
+### Stop hook
+
+At line 127–131:
+
+```go
+if resp.StopReason != api.StopReasonToolUse {
+    // Phase 7: Stop hook.
+    if l.hooks != nil {
+        l.hooks.RunStop(ctx)
+    }
+    l.notifyTurnComplete()
+    return nil
+}
+```
+
+### SessionStart hook
+
+Fires once in `main.go` after the loop is created:
+
+```go
+loop := conversation.NewLoop(loopCfg)
+
+// Phase 7: Fire SessionStart hook.
+if hookRunner != nil {
+    hookRunner.RunSessionStart(ctx)
+}
+```
+
+---
+
+## How skills register slash commands
+
+After loading skills in `main.go`:
+
+```go
+skills := skills.LoadSkills(cwd)
+```
+
+Pass them to the TUI via `AppConfig`:
+
+```go
+type AppConfig struct {
+    // ... existing fields ...
+    Skills []skills.Skill  // Phase 7
+}
+```
+
+In `newModel` or `app.Run`, register slash commands:
+
+```go
+for _, skill := range cfg.Skills {
+    if skill.Trigger == "" {
+        continue
+    }
+    // Strip leading "/" from trigger.
+    name := strings.TrimPrefix(skill.Trigger, "/")
+    content := skill.Content
+    slash.register(SlashCommand{
+        Name:        name,
+        Description: skill.Description,
+        Execute: func(m *model) string {
+            // Send the skill's content as a user message.
+            // This triggers the agentic loop with the skill's instructions.
+            return ""  // handled specially — submits content as a message
+        },
+    })
+}
+```
+
+Skill slash commands are special: they don't just return a string — they
+submit the skill's prompt as a user message to the loop. This requires
+either returning a special sentinel or handling them in `handleSubmit`
+(similar to how `/compact` and `/quit` are handled specially today).
 
 ---
 
 ## How to verify
 
-1. **stdio transport** — Create a test `.mcp.json` with a simple MCP server
-   (e.g. `npx -y @modelcontextprotocol/server-filesystem`). Verify the CLI
-   discovers its tools and can call them.
+1. **Command hooks** — Configure a `PreToolUse` hook that logs to a file.
+   Trigger a tool call and verify the log entry.
 
-2. **SSE transport** — Start a local MCP server with HTTP SSE transport.
-   Verify tool discovery and execution work.
+2. **Hook blocking** — Configure a `PreToolUse` hook that exits non-zero
+   for `Bash` calls containing `rm`. Verify the tool is blocked.
 
-3. **Tool visibility** — Verify MCP tools appear in the tool definitions
-   sent to the API (check with `--dangerously-skip-permissions` and ask the
-   model "what tools do you have?").
+3. **UserPromptSubmit hook** — Configure a hook that prepends context.
+   Verify the modified message appears in the conversation.
 
-4. **Sub-agent inheritance** — Trigger an Agent tool call and verify the
-   sub-agent can see and use MCP tools.
+4. **SessionStart hook** — Configure a hook that runs a setup script.
+   Verify it runs when the CLI starts.
 
-5. **Permission flow** — Verify MCP tool calls go through the permission
-   handler (should show permission prompt in TUI).
+5. **Stop hook** — Configure a hook that runs cleanup. Verify it fires
+   when the conversation ends.
 
-6. **Permission rules** — Add a rule like `{"tool": "mcp__*", "action": "allow"}`
-   and verify it auto-approves MCP tools.
+6. **Skills loading** — Create a `.claude/skills/commit.md` with
+   frontmatter. Verify `/commit` appears in `/help` output.
 
-7. **Server failure** — Start the CLI with a misconfigured MCP server.
-   Verify it warns and continues without crashing.
+7. **Skill execution** — Run `/commit` and verify the skill's prompt
+   is sent to the model.
 
-8. **Graceful shutdown** — Verify MCP server subprocesses are cleaned up on
-   Ctrl+C.
+8. **JSON output** — Run `claude -p "hello" --output-format json` and
+   verify valid JSON output.
 
-9. **Resource tools** — With a server that supports resources, verify
-   `ListMcpResources` and `ReadMcpResource` work.
+9. **Stream-JSON output** — Run with `--output-format stream-json` and
+   verify one JSON line per event.
 
-10. **/mcp command** — Verify the slash command shows connected servers and
-    their tool counts.
+10. **Pipe support** — Run `echo "hello" | claude -p` and verify it
+    reads the prompt from stdin.
 
-When in doubt about protocol details, inspect the official CLI's traffic
-with `mitmproxy` or add logging to the JSON-RPC exchange.
+11. **Sub-agent hooks** — Trigger a sub-agent and verify PreToolUse hooks
+    fire for the sub-agent's tool calls.
+
+12. **PermissionRequest hook** — Configure a hook, trigger a permission
+    prompt, verify the hook fires.
