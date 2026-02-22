@@ -1,454 +1,639 @@
-# Phase 3: Session and Config — Integration Guide
+# Phase 4: Remaining Tools — Integration Guide
 
-Phase 3 adds session persistence, settings hierarchy, enhanced CLAUDE.md loading, permission rules, and context compaction.
+Phase 4 completes the tool set. Every new tool is a file in `internal/tools/` that implements the `tools.Tool` interface and gets registered in `main.go`.
 
-**The JavaScript source in `claude-code-source/cli.js` is the ground truth.** Every file format, loading order, merge rule, and behavioral detail must match what that code does. When this document and the JS disagree, the JS wins. Search `cli.js` to confirm every assumption before writing Go code.
+**The TypeScript definitions in `claude-code-source/sdk-tools.d.ts` are the ground truth for input/output schemas.** When this document and the TS types disagree, the TS types win.
 
 ---
 
 ## What exists today
 
-### Key types you will consume
+### The Tool interface (`internal/tools/registry.go`)
 
-**`api.Message`** (`internal/api/types.go`) — the message format used everywhere:
+Every tool implements this:
+
 ```go
-type Message struct {
-    Role    string          `json:"role"`
-    Content json.RawMessage `json:"content"` // string or []ContentBlock
-}
-```
-Messages are created via `api.NewTextMessage(role, text)` and `api.NewBlockMessage(role, blocks)`. The `Content` field is raw JSON — it can be a JSON string (`"hello"`) or a JSON array of `ContentBlock` objects.
-
-**`api.ContentBlock`** — union type for text, tool_use, tool_result. Tool results carry `ToolUseID`, `Content` (raw JSON), and `IsError`.
-
-**`api.SystemBlock`** — system prompt blocks with optional `CacheControl`:
-```go
-type SystemBlock struct {
-    Type         string        `json:"type"`
-    Text         string        `json:"text,omitempty"`
-    CacheControl *CacheControl `json:"cache_control,omitempty"`
+type Tool interface {
+    Name() string                                              // e.g. "Agent", "TodoWrite"
+    Description() string                                       // sent to the API
+    InputSchema() json.RawMessage                              // JSON Schema for input
+    Execute(ctx context.Context, input json.RawMessage) (string, error)
+    RequiresPermission(input json.RawMessage) bool
 }
 ```
 
-**`api.Usage`** — token counts from every response:
+`Execute` returns a **string** that becomes the `tool_result` content sent back to the API. For simple tools this is plain text. For tools with structured output (like `AgentOutput`), the string should be JSON that the model can parse.
+
+### Registry and wiring (`internal/tools/registry.go`, `cmd/claude/main.go`)
+
+Tools are registered in `main.go` lines 139-149:
+
 ```go
-type Usage struct {
-    InputTokens              int  `json:"input_tokens"`
-    OutputTokens             int  `json:"output_tokens"`
-    CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
-    CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
-}
+registry := tools.NewRegistry(permHandler)
+registry.Register(tools.NewBashTool(cwd))
+registry.Register(tools.NewFileReadTool())
+// ... etc
 ```
 
-**`api.CreateMessageRequest`** — the full request struct, including `Model`, `MaxTokens`, `Messages`, `System`, `Tools`, `Stream`, `Metadata`, `Temp`, `TopP`, `TopK`.
+Phase 4 adds more `registry.Register(...)` calls here. The registry handles permission checks automatically — if `RequiresPermission()` returns true, it calls the `PermissionHandler` before executing.
 
-### Key interfaces you will extend
+### The agentic loop (`internal/conversation/loop.go`)
 
-**`conversation.ToolExecutor`** (`internal/conversation/loop.go`):
+The loop dispatches tool calls via the `ToolExecutor` interface:
+
 ```go
 type ToolExecutor interface {
     Execute(ctx context.Context, name string, input []byte) (string, error)
     HasTool(name string) bool
 }
 ```
-The `tools.Registry` implements this. Your settings-based permission rules need to integrate with the registry's existing `PermissionHandler` interface.
 
-**`tools.PermissionHandler`** (`internal/tools/registry.go`):
+`tools.Registry` implements this. When the API responds with `stop_reason: "tool_use"`, the loop iterates over `tool_use` content blocks, calls `registry.Execute(ctx, block.Name, block.Input)`, and collects the results. **Phase 4 tools don't need to modify this loop — they just need to be registered.**
+
+### Stream handler (`internal/conversation/loop.go`)
+
+`ToolAwareStreamHandler` displays `[tool: <name>] <summary>` during streaming. The `toolInputSummary` function (line 244) has cases for existing tools. **Add cases for new tools** so the user sees meaningful output during execution:
+
 ```go
-type PermissionHandler interface {
-    RequestPermission(ctx context.Context, toolName string, input json.RawMessage) (bool, error)
-}
+case "Agent":
+    if s := extractString("description"); s != "" {
+        return s
+    }
+case "TodoWrite":
+    return "updating task list"
+case "WebFetch":
+    if s := extractString("url"); s != "" {
+        return s
+    }
+// etc.
 ```
-Currently there are two implementations: `TerminalPermissionHandler` (prompts on stdin) and `AlwaysAllowPermissionHandler`. Phase 3 needs a new implementation that checks permission rules from settings *before* falling through to the terminal prompt.
 
-**`tools.Tool`** — each tool declares `RequiresPermission(input json.RawMessage) bool`. The registry calls this first; if it returns true, it calls the `PermissionHandler`. Your rule-based handler is the `PermissionHandler`, not a replacement for `RequiresPermission`.
+### API client (`internal/api/client.go`)
 
-### Existing code you will modify
+The `api.Client` is needed by the Agent tool to spawn sub-agents. It's currently constructed in `main.go` and passed into `LoopConfig`. The Agent tool needs access to the client, the system prompt, and the tool registry to create child loops. There are two clean ways to do this:
 
-**`conversation.History`** (`internal/conversation/history.go`) — currently an in-memory `[]api.Message` with no serialization. You need to add `MarshalJSON`/`UnmarshalJSON` (or equivalent export/import methods) so sessions can be saved and loaded.
+1. **Pass dependencies into the tool constructor** — `NewAgentTool(client, system, registry)`
+2. **Define a LoopFactory** — a function the Agent tool calls to create sub-loops
 
-**`conversation.Loop`** (`internal/conversation/loop.go`) — currently creates a fresh `History` internally. It needs to accept an existing `History` for session resume, and it needs to trigger compaction when token counts get high.
+Option 1 is simpler and matches how `BashTool` already takes `workDir`.
 
-**`conversation.BuildSystemPrompt`** (`internal/conversation/system_prompt.go`) — currently a standalone function that loads CLAUDE.md from a fixed set of paths. Phase 3 upgrades this to support `@path` imports, `.claude/rules/` directory, and injection of permission context. The function signature will likely need to accept a settings/config struct instead of just `cwd`.
+### Session store (`internal/session/session.go`)
 
-**`cmd/claude/main.go`** — currently ignores `-c` and `-r` flags, hardcodes `BuildSystemPrompt(cwd)`, and creates the `TerminalPermissionHandler` directly. Phase 3 wires in session loading, settings loading, and the rule-based permission handler.
+The Agent tool may need to create sessions for sub-agents (or not — check `cli.js`). The session store is available in `main.go` but is not currently passed to tools. If sub-agents need their own sessions, you'll need to thread the store through.
+
+### Config types (`internal/config/settings.go`)
+
+Settings are loaded in `main.go` and passed to `BuildSystemPrompt`. The Config tool reads and writes settings at runtime. It needs the CWD (to find project settings) and the home directory (for user settings). It does **not** need access to the merged in-memory settings — it operates on the files directly.
 
 ---
 
-## 1. Session persistence (`internal/session/`)
+## Tool-by-tool guide
 
-### What it does
+### 1. TodoWrite (`internal/tools/todo.go`)
 
-Sessions store the full conversation history so users can resume with `claude -c` (most recent) or `claude -r <session-id>` (by ID).
+**What it does:** Manages a structured task list displayed to the user. The model calls it to track progress on multi-step tasks.
 
-### What the JS does (ground truth)
-
-Search `cli.js` for `session`, `conversation`, `save`, `resume`, `compact`, `checkpoint`. Key things to confirm:
-- Where sessions are stored (likely `~/.claude/sessions/` or `~/.claude/projects/<hash>/sessions/`)
-- The JSON format of a saved session (message array, metadata like model, cwd, timestamps)
-- How session IDs are generated
-- How "most recent" is determined (by file mtime? by a metadata field?)
-- Whether tool results are stored verbatim or summarized
-- Whether sessions are saved after every turn or only on exit
-
-### Interface with existing code
-
-**Reading history out of the loop:**
-
-`conversation.History` currently has `Messages() []api.Message` which returns the internal slice. For session save, you need to serialize this. Add methods to `History`:
-
-```go
-// SetMessages replaces the message list (for session resume).
-func (h *History) SetMessages(msgs []api.Message)
-
-// or, add a constructor:
-func NewHistoryFrom(msgs []api.Message) *History
-```
-
-Then modify `conversation.NewLoop` (or add a `LoopConfig` field) so the loop can start with a pre-populated history:
-
-```go
-type LoopConfig struct {
-    // ... existing fields ...
-    History *History // if non-nil, resume from this history
-}
-```
-
-In `NewLoop`, if `cfg.History != nil`, use it instead of calling `NewHistory()`.
-
-**Saving after each turn:**
-
-The loop's `run()` method is the natural save point. After `l.history.AddAssistantResponse(resp.Content)` and after `l.history.AddToolResults(toolResults)`, the session should be persisted. Rather than having the loop call the session store directly, consider a callback or event interface:
-
-```go
-type LoopConfig struct {
-    // ...
-    OnTurnComplete func(history *History) // called after each API round-trip
-}
-```
-
-The session package calls `session.Save()` inside this callback.
-
-**Session store interface:**
-
-```go
-// internal/session/session.go
-type Session struct {
-    ID        string        `json:"id"`
-    Model     string        `json:"model"`
-    CWD       string        `json:"cwd"`
-    Messages  []api.Message `json:"messages"`
-    CreatedAt time.Time     `json:"created_at"`
-    UpdatedAt time.Time     `json:"updated_at"`
-    // ... whatever else cli.js stores
-}
-
-type Store struct {
-    dir string // e.g. ~/.claude/projects/<hash>/sessions/
-}
-
-func (s *Store) Save(session *Session) error
-func (s *Store) Load(id string) (*Session, error)
-func (s *Store) MostRecent() (*Session, error)
-func (s *Store) List() ([]*Session, error)
-```
-
-**Verify the exact JSON schema by inspecting saved sessions from the official CLI**, not by guessing. Run the official CLI, have a conversation, then look at what it wrote to disk. The Go implementation must produce and consume the same format.
-
-### Wiring in main.go
-
-```go
-// Before creating the loop:
-var history *conversation.History
-if *continueFlag {
-    sess, err := sessionStore.MostRecent()
-    // ... load sess.Messages into history
-}
-if *resumeFlag != "" {
-    sess, err := sessionStore.Load(*resumeFlag)
-    // ...
-}
-
-loop := conversation.NewLoop(conversation.LoopConfig{
-    // ...
-    History: history,
-})
-```
-
----
-
-## 2. Settings hierarchy (`internal/config/`)
-
-### What it does
-
-Settings come from five sources, highest priority first:
-1. **Managed** — `/etc/claude/settings.json` (IT-deployed)
-2. **CLI flags** — command-line overrides
-3. **Local** — `.claude/settings.local.json` (per-project, gitignored)
-4. **Project** — `.claude/settings.json` (per-project, committed)
-5. **User** — `~/.claude/settings.json` (global)
-
-### What the JS does (ground truth)
-
-Search `cli.js` for `settings.json`, `settings.local`, `managed`, `/etc/claude`. Confirm:
-- Exact file paths at each level
-- Merge strategy (deep merge? shallow merge? per-key override?)
-- What keys exist (`permissions`, `model`, `env`, `hooks`, `sandbox`, etc.)
-- How `env` values are injected (into the process env? into Bash tool env?)
-- Whether any keys are additive across levels (e.g., do permission rules merge or replace?)
-
-### Settings struct
-
-```go
-// internal/config/settings.go
-type Settings struct {
-    Permissions []PermissionRule `json:"permissions,omitempty"`
-    Model       string           `json:"model,omitempty"`
-    Env         map[string]string `json:"env,omitempty"`
-    Hooks       map[string]Hook  `json:"hooks,omitempty"` // Phase 7, but parse now
-    Sandbox     *SandboxConfig   `json:"sandbox,omitempty"`
-    // ... check cli.js for the complete set of keys
-}
-```
-
-### Interface with existing code
-
-The merged settings affect several existing components:
-
-- **Model selection** in `main.go` — currently hardcoded fallback to `api.ModelClaude4Sonnet`. Settings should provide the default; CLI flag overrides it.
-- **Permission rules** — feed into the new rule-based `PermissionHandler` (see section 4 below).
-- **System prompt** — `BuildSystemPrompt` may need settings context (e.g., to inject permission descriptions).
-- **Environment variables** — `settings.Env` should be applied to the Bash tool's execution environment. The `BashTool` currently uses `cmd.Dir` but doesn't set `cmd.Env`. You'll need to extend `NewBashTool` to accept env vars, or add a method.
-
-### Loading and merging
-
-```go
-func LoadSettings(cwd string) (*Settings, error)
-```
-
-This function reads all five levels and merges them. The merge semantics must match the JS exactly. Pay particular attention to whether `permissions` arrays are concatenated or replaced.
-
----
-
-## 3. CLAUDE.md loading enhancements (`internal/conversation/system_prompt.go`)
-
-### What exists
-
-`BuildSystemPrompt(cwd)` loads CLAUDE.md from three location groups:
-1. `~/.claude/CLAUDE.md`
-2. Every directory from root to CWD
-3. `.claude/CLAUDE.md`
-
-It concatenates sections with `---` separators and injects them into one `SystemBlock`.
-
-### What Phase 3 adds
-
-**`@path` imports** — CLAUDE.md files can contain `@path/to/other/file` directives that include content from other files. Search `cli.js` for `@` handling in CLAUDE.md loading to find:
-- The exact syntax (is it `@path` on its own line? can it be inline?)
-- Whether paths are relative to the CLAUDE.md file or to the CWD
-- Whether it's recursive (can an imported file itself contain `@path`?)
-- Any depth limit or cycle detection
-
-**`.claude/rules/` directory** — all `.md` files in `.claude/rules/` are loaded as additional instructions. Search `cli.js` for `rules` to confirm:
-- Load order within the directory (alphabetical? glob order?)
-- Whether subdirectories are traversed
-- Whether this is at project level only or also at user level (`~/.claude/rules/`)
-
-### Interface with existing code
-
-The current `BuildSystemPrompt(cwd string) []api.SystemBlock` signature may need to change. If settings influence the system prompt (e.g., injecting permission rule summaries), the signature should become:
-
-```go
-func BuildSystemPrompt(cwd string, settings *config.Settings) []api.SystemBlock
-```
-
-Or, if you prefer a builder pattern:
-
-```go
-type SystemPromptBuilder struct {
-    CWD      string
-    Settings *config.Settings
-}
-func (b *SystemPromptBuilder) Build() []api.SystemBlock
-```
-
-Either way, update the call site in `main.go` accordingly.
-
-The internal `loadClaudeMD(cwd)` function needs to be rewritten to handle `@path` resolution and `.claude/rules/` loading. Keep it in `system_prompt.go` or move it to a dedicated `internal/config/claudemd.go` — either works, but the CLAUDE.md spec says `internal/config/claudemd.go`.
-
----
-
-## 4. Permission rules (`internal/config/permissions.go`)
-
-### What it does
-
-Settings files contain permission rules that pre-authorize or deny specific tool calls, eliminating the need for interactive prompts:
-
-```json
+**Input schema (from `sdk-tools.d.ts`):**
+```typescript
 {
-  "permissions": [
-    {"tool": "Bash", "pattern": "npm run *", "action": "allow"},
-    {"tool": "FileRead", "pattern": ".env", "action": "deny"},
-    {"tool": "Bash", "action": "ask"}
-  ]
+  todos: {
+    content: string;          // imperative: "Run tests"
+    status: "pending" | "in_progress" | "completed";
+    activeForm: string;       // continuous: "Running tests"
+  }[];
 }
 ```
 
-### What the JS does (ground truth)
-
-Search `cli.js` for `permission`, `allow`, `deny`, `ask`, `glob`, `pattern`. Confirm:
-- The exact JSON schema for permission rules
-- How patterns work for different tools (glob for Bash commands? file path glob for Read/Edit/Write? domain matching for WebFetch?)
-- Rule evaluation order (first match? most specific? all levels merged then evaluated?)
-- Whether `ask` is the implicit default for unmatched tool calls
-- What `Bash(npm run *)` notation means exactly and how it's parsed
-
-### Interface with existing code
-
-Create a new `PermissionHandler` implementation that wraps the existing terminal handler:
+**Implementation:** This is purely in-memory state with terminal display. No file I/O needed.
 
 ```go
-// internal/config/permissions.go (or internal/tools/rulepermission.go)
-type RuleBasedPermissionHandler struct {
-    rules    []PermissionRule
-    fallback tools.PermissionHandler // the TerminalPermissionHandler
+type TodoWriteTool struct {
+    mu    sync.Mutex
+    todos []TodoItem
 }
 
-func (h *RuleBasedPermissionHandler) RequestPermission(
-    ctx context.Context, toolName string, input json.RawMessage,
-) (bool, error) {
-    action := h.matchRule(toolName, input)
-    switch action {
-    case "allow":
-        return true, nil
-    case "deny":
-        return false, nil
-    default: // "ask" or no match
-        return h.fallback.RequestPermission(ctx, toolName, input)
+type TodoItem struct {
+    Content    string `json:"content"`
+    Status     string `json:"status"`
+    ActiveForm string `json:"activeForm"`
+}
+```
+
+`Execute` replaces the todo list and returns JSON with `oldTodos` and `newTodos`. The tool also prints a formatted task list to the terminal (the stream handler won't see this — the tool itself should print).
+
+**RequiresPermission:** false.
+
+**Wiring:** `registry.Register(tools.NewTodoWriteTool())`
+
+---
+
+### 2. AskUserQuestion (`internal/tools/askuser.go`)
+
+**What it does:** Presents structured questions with options to the user via the terminal. The model uses this to get decisions.
+
+**Input schema (from `sdk-tools.d.ts`):**
+```typescript
+{
+  questions: [{
+    question: string;       // "Which library for date formatting?"
+    header: string;         // max 12 chars, e.g. "Library"
+    options: [{
+      label: string;        // "date-fns"
+      description: string;  // "Lightweight, tree-shakeable"
+    }, ...];                // 2-4 options
+    multiSelect: boolean;
+  }, ...];                  // 1-4 questions
+}
+```
+
+**Implementation:** Read user input from stdin (similar to `TerminalPermissionHandler`). Display each question, number the options, read the selection. An "Other" option is always appended automatically.
+
+```go
+type AskUserTool struct {
+    reader *bufio.Reader
+}
+```
+
+**Output:** JSON with `questions` (echo back) and `answers` (map of question text → selected label or free-text).
+
+**RequiresPermission:** false (user interaction IS the permission).
+
+**Wiring:** `registry.Register(tools.NewAskUserTool())`
+
+---
+
+### 3. Agent (`internal/tools/agent.go`)
+
+**What it does:** Spawns a sub-agent with its own isolated conversation loop. The parent agent delegates tasks to child agents. This is the most complex Phase 4 tool.
+
+**Input schema (from `sdk-tools.d.ts`):**
+```typescript
+{
+  description: string;          // "Search for auth code"
+  prompt: string;               // full task description
+  subagent_type: string;        // agent type identifier
+  model?: "sonnet" | "opus" | "haiku";
+  resume?: string;              // agent ID to resume
+  run_in_background?: boolean;
+  max_turns?: number;
+}
+```
+
+**Implementation:**
+
+The Agent tool creates a **new `conversation.Loop`** with its own `History`, the same system prompt and tool definitions, and runs it to completion (or until `max_turns`). Key design:
+
+```go
+type AgentTool struct {
+    client   *api.Client
+    system   []api.SystemBlock
+    tools    []api.ToolDefinition
+    toolExec conversation.ToolExecutor
+    mu       sync.Mutex
+    agents   map[string]*agentState  // track running/completed agents
+}
+
+type agentState struct {
+    id       string
+    loop     *conversation.Loop
+    done     chan struct{}
+    result   string
+    err      error
+}
+```
+
+Constructor: `NewAgentTool(client, system, toolDefs, toolExec)`
+
+**Synchronous execution:** Create a loop, call `loop.SendMessage(ctx, prompt)`, collect the final text response from history, return it as the tool result.
+
+**Background execution (`run_in_background: true`):** Launch a goroutine, return immediately with an `async_launched` result containing the agent ID and an output file path. The TaskOutput tool reads the result later.
+
+**Resume (`resume: "<id>"`):** Look up the agent by ID in `agents`, re-use its loop (which still has the history), send another message.
+
+**Output:** JSON with `agentId`, `content` (text blocks), `totalToolUseCount`, `totalDurationMs`, `totalTokens`, `usage`, `status`.
+
+**RequiresPermission:** false (sub-agents inherit the parent's permission handler).
+
+**Wiring:** This tool needs the client, system prompt, tool definitions, and tool executor. In `main.go`:
+
+```go
+agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
+registry.Register(agentTool)
+```
+
+**Note:** Registering the agent tool AFTER other tools means `registry.Definitions()` won't include the Agent tool itself in its own sub-loops. This is correct — sub-agents should not recursively spawn more agents (or if they should, pass the full definitions including Agent). Check `cli.js` to confirm whether sub-agents have access to the Agent tool.
+
+---
+
+### 4. TaskOutput (`internal/tools/taskoutput.go`)
+
+**What it does:** Reads the output of a background agent or command.
+
+**Input schema:**
+```typescript
+{
+  task_id: string;
+  block: boolean;     // whether to wait for completion
+  timeout: number;    // max wait time in ms
+}
+```
+
+**Implementation:** Looks up the agent by ID in the `AgentTool`'s state map. If `block` is true, waits on the agent's `done` channel (with timeout). Returns the agent's result.
+
+This tool needs a reference to the agent registry. Either:
+- Make it a method on `AgentTool` itself (not clean for the Tool interface)
+- Have a shared `BackgroundTaskStore` that both `AgentTool` and `TaskOutput` reference
+
+```go
+type BackgroundTaskStore struct {
+    mu    sync.Mutex
+    tasks map[string]*BackgroundTask
+}
+
+type BackgroundTask struct {
+    ID     string
+    Done   chan struct{}
+    Result string
+    Err    error
+}
+```
+
+Both `AgentTool` and `TaskOutputTool` take a `*BackgroundTaskStore` in their constructors.
+
+**RequiresPermission:** false.
+
+---
+
+### 5. TaskStop (`internal/tools/taskstop.go`)
+
+**What it does:** Stops a running background task.
+
+**Input schema:**
+```typescript
+{
+  task_id?: string;
+  shell_id?: string;   // deprecated alias for task_id
+}
+```
+
+**Implementation:** Looks up the task in `BackgroundTaskStore`, cancels its context, waits briefly for cleanup.
+
+**RequiresPermission:** false.
+
+---
+
+### 6. WebFetch (`internal/tools/webfetch.go`)
+
+**What it does:** Fetches a URL, converts HTML to markdown, and processes it with a prompt using the API.
+
+**Input schema:**
+```typescript
+{
+  url: string;
+  prompt: string;
+}
+```
+
+**Implementation:**
+
+1. HTTP GET the URL (follow redirects, enforce HTTPS upgrade)
+2. Convert HTML to plain text or markdown (use a library or write a basic tag stripper)
+3. Send the content + prompt to the API as a separate (non-streaming) call
+4. Return the model's response
+
+```go
+type WebFetchTool struct {
+    client     *api.Client
+    httpClient *http.Client
+}
+```
+
+The tool needs `api.Client` to process the fetched content. Use a dedicated HTTP client with reasonable timeouts and a 15-minute cache (per the CLI's spec).
+
+**Output:** JSON with `bytes`, `code`, `codeText`, `result`, `durationMs`, `url`.
+
+**RequiresPermission:** true (network access). Add a case to `extractMatchValue` in `internal/config/permissions.go` if not already there (it is — WebFetch is already handled).
+
+**Wiring:** `registry.Register(tools.NewWebFetchTool(client))`
+
+---
+
+### 7. WebSearch (`internal/tools/websearch.go`)
+
+**What it does:** Searches the web and returns results. In the official CLI, this is a server-side tool — the API itself performs the search. Check `cli.js` to confirm whether this is a client-side HTTP call or a server-side tool_use that the API handles natively.
+
+**Input schema:**
+```typescript
+{
+  query: string;
+  allowed_domains?: string[];
+  blocked_domains?: string[];
+}
+```
+
+**If server-side:** The tool is a passthrough. `Execute` just returns an error or placeholder saying the API handles it. The tool definition still needs to be sent so the model knows it's available, but execution may never happen client-side. Search `cli.js` for `web_search`, `server_tool`, `server-tool` to understand the mechanism.
+
+**If client-side:** Use a search API (the official CLI likely uses an internal Anthropic endpoint). The output schema has structured results with titles and URLs.
+
+**RequiresPermission:** false (read-only, no local side effects).
+
+---
+
+### 8. NotebookEdit (`internal/tools/notebook.go`)
+
+**What it does:** Edits Jupyter notebook (.ipynb) cells. Notebooks are JSON files with a specific structure.
+
+**Input schema:**
+```typescript
+{
+  notebook_path: string;     // absolute path
+  cell_id?: string;          // target cell
+  new_source: string;        // new cell content
+  cell_type?: "code" | "markdown";
+  edit_mode?: "replace" | "insert" | "delete";
+}
+```
+
+**Implementation:**
+
+1. Read the .ipynb file (it's JSON)
+2. Parse the notebook structure: `{ cells: [{ id, cell_type, source, ... }], metadata, ... }`
+3. Find the target cell by `cell_id` (or by index)
+4. Apply the edit (replace source, insert new cell, or delete cell)
+5. Write the file back
+
+```go
+type NotebookEditTool struct{}
+
+type Notebook struct {
+    Cells         []NotebookCell         `json:"cells"`
+    Metadata      map[string]interface{} `json:"metadata"`
+    NBFormat      int                    `json:"nbformat"`
+    NBFormatMinor int                    `json:"nbformat_minor"`
+}
+
+type NotebookCell struct {
+    ID       string                 `json:"id,omitempty"`
+    CellType string                 `json:"cell_type"`
+    Source   interface{}            `json:"source"`  // string or []string
+    Metadata map[string]interface{} `json:"metadata,omitempty"`
+    Outputs  []interface{}          `json:"outputs,omitempty"`
+}
+```
+
+**Note:** The `source` field in .ipynb can be a single string or an array of strings (one per line). Handle both when reading; write back in the same format the file originally used.
+
+**Output:** JSON with `new_source`, `cell_id`, `cell_type`, `language`, `edit_mode`, `notebook_path`, `original_file`, `updated_file`.
+
+**RequiresPermission:** true (writes to disk).
+
+---
+
+### 9. ExitPlanMode (`internal/tools/planmode.go`)
+
+**What it does:** Signals that the model has finished writing a plan and is ready for user approval. This is a coordination tool, not a file operation.
+
+**Input schema:**
+```typescript
+{
+  allowedPrompts?: {
+    tool: "Bash";
+    prompt: string;   // "run tests", "install dependencies"
+  }[];
+}
+```
+
+**Implementation:** Minimal — the tool returns a message indicating the plan is ready for review. The TUI (Phase 5) will handle the actual approval UI. For now, just return confirmation text.
+
+**RequiresPermission:** false.
+
+---
+
+### 10. Config (`internal/tools/config_tool.go`)
+
+**What it does:** Gets or sets configuration values at runtime.
+
+**Input schema:**
+```typescript
+{
+  setting: string;               // "model", "theme", "permissions.defaultMode"
+  value?: string | boolean | number;  // omit to get
+}
+```
+
+**Implementation:**
+
+- **Get:** Read the appropriate settings file and extract the key
+- **Set:** Read the file, modify the key, write it back
+
+The tool operates on `~/.claude/settings.json` (user level) by default. It uses `config.loadSettingsFile` and `config.LoadSettings` from the existing config package. You may want to export `loadSettingsFile` (currently unexported) or add a helper.
+
+```go
+type ConfigTool struct {
+    cwd string
+}
+```
+
+**Output:** JSON with `success`, `operation`, `setting`, `value`/`previousValue`/`newValue`.
+
+**RequiresPermission:** false.
+
+---
+
+### 11. EnterWorktree (`internal/tools/worktree.go`)
+
+**What it does:** Creates an isolated git worktree so an agent can work on a separate copy of the repo without affecting the main working directory.
+
+**Input schema:**
+```typescript
+{
+  name?: string;   // optional worktree name
+}
+```
+
+**Implementation:**
+
+1. Verify the CWD is a git repo (`git rev-parse --git-dir`)
+2. Generate a worktree name if not provided
+3. Create the worktree (`git worktree add <path> -b <branch>`)
+4. Return the worktree path and branch name
+
+```go
+type WorktreeTool struct {
+    workDir string
+}
+```
+
+**Output:** JSON with `worktreePath`, `worktreeBranch`, `message`.
+
+**RequiresPermission:** true (creates files and git branches).
+
+---
+
+### 12. FileRead extensions
+
+The existing `FileReadTool` (`internal/tools/fileread.go`) handles text files. Phase 4 adds:
+
+- **Images** (PNG, JPG, etc.) — return base64-encoded content as an image content block
+- **PDFs** — extract text from page ranges using the `pages` input field
+- **Jupyter notebooks** — render all cells with outputs
+
+These are extensions to the existing `FileReadTool.Execute`, not new tools. Add detection logic based on file extension:
+
+```go
+func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (string, error) {
+    // ... existing parsing ...
+
+    ext := strings.ToLower(filepath.Ext(in.FilePath))
+    switch ext {
+    case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+        return t.readImage(in.FilePath)
+    case ".pdf":
+        return t.readPDF(in.FilePath, in.Pages)
+    case ".ipynb":
+        return t.readNotebook(in.FilePath)
+    default:
+        // existing text file logic
     }
 }
 ```
 
-In `main.go`, replace the direct `TerminalPermissionHandler` creation:
+For images, the result needs to be an image content block that the API understands. Since `Execute` returns a string, you may need to encode the image data as a base64 string with a prefix the model recognizes, or reconsider whether the tool result format needs to support structured content blocks (check how `cli.js` returns image data from FileRead).
 
-```go
-// Before (Phase 2):
-permHandler = tools.NewTerminalPermissionHandler()
-
-// After (Phase 3):
-terminalHandler := tools.NewTerminalPermissionHandler()
-permHandler = config.NewRuleBasedPermissionHandler(settings.Permissions, terminalHandler)
-```
-
-The `tools.Registry` doesn't change — it still calls `PermissionHandler.RequestPermission()`. The rule evaluation is hidden inside the handler.
-
-### Pattern matching
-
-You need a function that takes a tool name, the tool's JSON input, and a rule, and decides if the rule matches. The matching logic varies by tool:
-
-- **Bash** — match the `command` field against the pattern (glob-style)
-- **FileRead/FileEdit/FileWrite** — match `file_path` against the pattern
-- **WebFetch** — match the URL's domain against `domain:example.com` patterns
-- **Glob/Grep** — match the `path` field
-
-The exact matching semantics must come from `cli.js`. Don't invent your own.
+For PDFs, consider using an external tool (`pdftotext`) via `exec.Command` or a Go library.
 
 ---
 
-## 5. Context compaction (`internal/conversation/compaction.go`)
+### 13. Git checkpoint system
 
-### What it does
+Before file modifications (FileEdit, FileWrite), create automatic git snapshots so changes can be reverted.
 
-When the conversation history approaches the model's context window limit, older messages are summarized by calling the API, and the detailed messages are replaced with the summary. This keeps the conversation going without hitting token limits.
+**Implementation approach:**
 
-### What the JS does (ground truth)
-
-Search `cli.js` for `compact`, `summarize`, `context`, `checkpoint`, `token`, `limit`. Confirm:
-- The trigger condition (what token threshold triggers compaction? is it based on input_tokens from the Usage?)
-- What gets summarized (all messages? only messages before a certain point? only non-recent messages?)
-- The prompt sent to the API for summarization
-- How the summary replaces messages (single summary message? preserves the most recent N messages?)
-- Whether compaction happens automatically or only via `/compact` command
-- What context window sizes the JS uses for different models
-
-### Interface with existing code
-
-Compaction needs to read the history and modify it. Add to `History`:
+Rather than a separate tool, this is a wrapper around FileEdit and FileWrite. Before executing, check if the target file is in a git repo and stash/commit the current state:
 
 ```go
-// ReplaceRange replaces messages[start:end] with replacement.
-func (h *History) ReplaceRange(start, end int, replacement []api.Message)
-```
-
-The compaction logic also needs to call the API to generate the summary. It should accept the `api.Client` directly:
-
-```go
-// internal/conversation/compaction.go
-type Compactor struct {
-    Client           *api.Client
-    MaxInputTokens   int // trigger threshold
-    PreserveRecent   int // number of recent messages to keep
+type CheckpointingFileEditTool struct {
+    inner   *FileEditTool
+    workDir string
 }
 
-func (c *Compactor) ShouldCompact(usage api.Usage) bool
-func (c *Compactor) Compact(ctx context.Context, history *History) error
-```
-
-Wire this into the loop. After each API call in `run()`, check if compaction is needed:
-
-```go
-resp, err := l.client.CreateMessageStream(ctx, req, l.handler)
-// ...
-if l.compactor != nil && l.compactor.ShouldCompact(resp.Usage) {
-    if err := l.compactor.Compact(ctx, l.history); err != nil {
-        // log warning but don't fail the loop
-    }
+func (t *CheckpointingFileEditTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    // 1. Parse input to get file_path
+    // 2. If file is in a git repo, create a checkpoint
+    // 3. Delegate to t.inner.Execute(ctx, input)
+    // 4. Return result
 }
 ```
 
-Add `Compactor` to `LoopConfig`:
-
-```go
-type LoopConfig struct {
-    // ... existing fields ...
-    Compactor *Compactor
-}
-```
-
-Also wire the `/compact` slash command in `main.go` to trigger manual compaction.
+Or add checkpoint logic directly to FileEdit/FileWrite. Search `cli.js` for `checkpoint`, `snapshot`, `stash` to understand the exact mechanism (stash? lightweight commit on a temp branch? reflog?).
 
 ---
 
-## Summary of changes by file
+## Shared infrastructure
+
+### BackgroundTaskStore
+
+The Agent, TaskOutput, and TaskStop tools share state about background tasks. Create a shared store:
+
+```go
+// internal/tools/background.go
+type BackgroundTaskStore struct {
+    mu    sync.Mutex
+    tasks map[string]*BackgroundTask
+}
+
+type BackgroundTask struct {
+    ID         string
+    Ctx        context.Context
+    Cancel     context.CancelFunc
+    Done       chan struct{}
+    Result     string
+    Err        error
+    OutputFile string
+}
+
+func NewBackgroundTaskStore() *BackgroundTaskStore
+func (s *BackgroundTaskStore) Add(task *BackgroundTask)
+func (s *BackgroundTaskStore) Get(id string) (*BackgroundTask, bool)
+func (s *BackgroundTaskStore) Remove(id string)
+```
+
+Wire it in `main.go`:
+
+```go
+bgStore := tools.NewBackgroundTaskStore()
+registry.Register(tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore))
+registry.Register(tools.NewTaskOutputTool(bgStore))
+registry.Register(tools.NewTaskStopTool(bgStore))
+```
+
+---
+
+## Changes to existing files
 
 | File | Change |
 |------|--------|
-| `internal/session/session.go` | **New.** Session struct, Store with Save/Load/MostRecent/List. |
-| `internal/session/persistence.go` | **New.** File I/O for sessions. Format must match official CLI. |
-| `internal/config/settings.go` | **New.** Settings struct, LoadSettings with 5-level merge. |
-| `internal/config/claudemd.go` | **New.** Enhanced CLAUDE.md loader with `@path` imports and `.claude/rules/`. |
-| `internal/config/permissions.go` | **New.** RuleBasedPermissionHandler, pattern matching. |
-| `internal/conversation/history.go` | **Modify.** Add SetMessages/export, serialization support. |
-| `internal/conversation/loop.go` | **Modify.** Accept existing History in LoopConfig, add OnTurnComplete callback, add Compactor. |
-| `internal/conversation/compaction.go` | **New.** Compactor with ShouldCompact/Compact. |
-| `internal/conversation/system_prompt.go` | **Modify.** Accept Settings, use enhanced CLAUDE.md loader. |
-| `cmd/claude/main.go` | **Modify.** Wire session load/save, settings loading, rule-based permissions, `/compact` command, activate `-c`/`-r` flags. |
-| `go.mod` | **Modify.** Add any new dependencies (e.g., glob matching library for permission patterns). |
+| `internal/tools/todo.go` | **New.** TodoWrite tool. |
+| `internal/tools/askuser.go` | **New.** AskUserQuestion tool. |
+| `internal/tools/agent.go` | **New.** Agent/Task tool with sub-loop spawning. |
+| `internal/tools/taskoutput.go` | **New.** TaskOutput tool. |
+| `internal/tools/taskstop.go` | **New.** TaskStop tool. |
+| `internal/tools/webfetch.go` | **New.** WebFetch tool. |
+| `internal/tools/websearch.go` | **New.** WebSearch tool. |
+| `internal/tools/notebook.go` | **New.** NotebookEdit tool. |
+| `internal/tools/planmode.go` | **New.** ExitPlanMode tool. |
+| `internal/tools/config_tool.go` | **New.** Config tool. |
+| `internal/tools/worktree.go` | **New.** EnterWorktree tool. |
+| `internal/tools/background.go` | **New.** BackgroundTaskStore shared by Agent/TaskOutput/TaskStop. |
+| `internal/tools/fileread.go` | **Modify.** Add image, PDF, and notebook reading. |
+| `internal/conversation/loop.go` | **Modify.** Add summary cases in `toolInputSummary` for new tools. |
+| `cmd/claude/main.go` | **Modify.** Register all new tools (lines 139-149 expand significantly). |
+
+---
+
+## Registration order in main.go
+
+After Phase 4, the registration block should look like:
+
+```go
+bgStore := tools.NewBackgroundTaskStore()
+
+registry := tools.NewRegistry(permHandler)
+registry.Register(tools.NewBashToolWithEnv(cwd, settings.Env))
+registry.Register(tools.NewFileReadTool())
+registry.Register(tools.NewFileEditTool())
+registry.Register(tools.NewFileWriteTool())
+registry.Register(tools.NewGlobTool(cwd))
+registry.Register(tools.NewGrepTool(cwd))
+registry.Register(tools.NewTodoWriteTool())
+registry.Register(tools.NewAskUserTool())
+registry.Register(tools.NewWebFetchTool(client))
+registry.Register(tools.NewWebSearchTool())
+registry.Register(tools.NewNotebookEditTool())
+registry.Register(tools.NewConfigTool(cwd))
+registry.Register(tools.NewWorktreeTool(cwd))
+registry.Register(tools.NewExitPlanModeTool())
+registry.Register(tools.NewTaskOutputTool(bgStore))
+registry.Register(tools.NewTaskStopTool(bgStore))
+
+// Agent tool registered last — gets tool definitions that include everything above.
+agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
+registry.Register(agentTool)
+```
 
 ---
 
 ## How to verify
 
-For every feature, compare against the official CLI:
+For each tool, compare against `sdk-tools.d.ts`:
 
-1. **Session format** — Run the official CLI (`npx @anthropic-ai/claude-code`), have a multi-turn conversation, then inspect the session files on disk. Your Go code must read those files and produce files the official CLI can read.
+1. **Input schema** — the JSON Schema returned by `InputSchema()` must match the TypeScript types exactly (field names, types, required fields, enums, constraints).
 
-2. **Settings merge** — Create settings files at all five levels with conflicting values. Run the official CLI and observe which value wins. Your merge logic must produce the same result.
+2. **Output format** — call each tool and verify the response string is parseable as the expected output type. The model relies on this structure.
 
-3. **CLAUDE.md loading** — Create CLAUDE.md files with `@path` imports and a `.claude/rules/` directory. Run the official CLI and inspect the system prompt (you can ask the model "what are your instructions?" to see what was injected). Your output must match.
+3. **Integration** — verify that the agentic loop correctly dispatches to each new tool, passes input, and threads results back into the conversation.
 
-4. **Permission rules** — Configure rules in settings, then trigger tool calls that should be auto-allowed, auto-denied, or prompted. Compare behavior with the official CLI.
+4. **Agent tool** — this is the hardest to test. Verify that sub-agents get their own history, can use all tools, and return results to the parent. Test background execution and resume.
 
-5. **Context compaction** — Fill a conversation to near the context limit and observe when/how the official CLI compacts. Your trigger threshold and summary behavior must match.
-
-When in doubt, read `cli.js`. It is 587K lines (prettified) but it is searchable, and it is the only source of truth.
+When in doubt, search `cli.js` for the tool name and study the execution logic.
