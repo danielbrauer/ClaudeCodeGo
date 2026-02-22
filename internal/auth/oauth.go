@@ -324,10 +324,7 @@ func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 	}
 
 	// Issue 8: Create and store API key.
-	apiKey, err := CreateAPIKey(ctx, f.config.APIKeyURL, tokenResp.AccessToken)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to create API key: %v\n", err)
-	}
+	apiKey, _ := CreateAPIKey(ctx, f.config.APIKeyURL, tokenResp.AccessToken)
 
 	return &LoginResult{
 		Tokens:  tokens,
