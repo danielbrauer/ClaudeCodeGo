@@ -16,9 +16,21 @@ func NewHistory() *History {
 	return &History{}
 }
 
+// NewHistoryFrom creates a history pre-populated with messages (for session resume).
+func NewHistoryFrom(msgs []api.Message) *History {
+	cp := make([]api.Message, len(msgs))
+	copy(cp, msgs)
+	return &History{messages: cp}
+}
+
 // Messages returns the current message list.
 func (h *History) Messages() []api.Message {
 	return h.messages
+}
+
+// SetMessages replaces the message list (for session resume or compaction).
+func (h *History) SetMessages(msgs []api.Message) {
+	h.messages = msgs
 }
 
 // AddUserMessage appends a user text message.
@@ -39,6 +51,19 @@ func (h *History) AddToolResults(results []api.ContentBlock) {
 // Len returns the number of messages.
 func (h *History) Len() int {
 	return len(h.messages)
+}
+
+// ReplaceRange replaces messages[start:end] with replacement messages.
+// Used by compaction to swap out detailed messages with a summary.
+func (h *History) ReplaceRange(start, end int, replacement []api.Message) {
+	if start < 0 || end > len(h.messages) || start > end {
+		return
+	}
+	var newMsgs []api.Message
+	newMsgs = append(newMsgs, h.messages[:start]...)
+	newMsgs = append(newMsgs, replacement...)
+	newMsgs = append(newMsgs, h.messages[end:]...)
+	h.messages = newMsgs
 }
 
 // MakeToolResult creates a tool_result content block.

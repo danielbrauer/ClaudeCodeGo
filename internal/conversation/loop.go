@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/anthropics/claude-code-go/internal/api"
@@ -17,33 +18,49 @@ type ToolExecutor interface {
 
 // Loop is the main agentic conversation loop.
 type Loop struct {
-	client   *api.Client
-	history  *History
-	system   []api.SystemBlock
-	tools    []api.ToolDefinition
-	toolExec ToolExecutor
-	handler  api.StreamHandler
+	client         *api.Client
+	history        *History
+	system         []api.SystemBlock
+	tools          []api.ToolDefinition
+	toolExec       ToolExecutor
+	handler        api.StreamHandler
+	compactor      *Compactor
+	onTurnComplete func(history *History)
 }
 
 // LoopConfig configures the agentic loop.
 type LoopConfig struct {
-	Client   *api.Client
-	System   []api.SystemBlock
-	Tools    []api.ToolDefinition
-	ToolExec ToolExecutor
-	Handler  api.StreamHandler
+	Client         *api.Client
+	System         []api.SystemBlock
+	Tools          []api.ToolDefinition
+	ToolExec       ToolExecutor
+	Handler        api.StreamHandler
+	History        *History             // if non-nil, resume from this history
+	Compactor      *Compactor           // if non-nil, enables auto-compaction
+	OnTurnComplete func(history *History) // called after each API round-trip
 }
 
 // NewLoop creates a new agentic conversation loop.
 func NewLoop(cfg LoopConfig) *Loop {
-	return &Loop{
-		client:   cfg.Client,
-		history:  NewHistory(),
-		system:   cfg.System,
-		tools:    cfg.Tools,
-		toolExec: cfg.ToolExec,
-		handler:  cfg.Handler,
+	history := cfg.History
+	if history == nil {
+		history = NewHistory()
 	}
+	return &Loop{
+		client:         cfg.Client,
+		history:        history,
+		system:         cfg.System,
+		tools:          cfg.Tools,
+		toolExec:       cfg.ToolExec,
+		handler:        cfg.Handler,
+		compactor:      cfg.Compactor,
+		onTurnComplete: cfg.OnTurnComplete,
+	}
+}
+
+// History returns the loop's conversation history.
+func (l *Loop) History() *History {
+	return l.history
 }
 
 // SendMessage sends a user message and runs the agentic loop until the
@@ -51,6 +68,14 @@ func NewLoop(cfg LoopConfig) *Loop {
 func (l *Loop) SendMessage(ctx context.Context, userMessage string) error {
 	l.history.AddUserMessage(userMessage)
 	return l.run(ctx)
+}
+
+// Compact triggers manual context compaction.
+func (l *Loop) Compact(ctx context.Context) error {
+	if l.compactor == nil {
+		return fmt.Errorf("compaction not configured")
+	}
+	return l.compactor.Compact(ctx, l.history)
 }
 
 func (l *Loop) run(ctx context.Context) error {
@@ -73,9 +98,18 @@ func (l *Loop) run(ctx context.Context) error {
 		// Add assistant response to history.
 		l.history.AddAssistantResponse(resp.Content)
 
+		// Check for auto-compaction after each API response.
+		if l.compactor != nil && l.compactor.ShouldCompact(resp.Usage) {
+			if err := l.compactor.Compact(ctx, l.history); err != nil {
+				// Log but don't fail the loop.
+				log.Printf("Warning: compaction failed: %v", err)
+			}
+		}
+
 		// Check if we need to execute tools.
 		if resp.StopReason != api.StopReasonToolUse {
 			// No tool calls - conversation turn is done.
+			l.notifyTurnComplete()
 			return nil
 		}
 
@@ -114,7 +148,14 @@ func (l *Loop) run(ctx context.Context) error {
 		}
 
 		l.history.AddToolResults(toolResults)
+		l.notifyTurnComplete()
 		// Loop back to call API again with tool results.
+	}
+}
+
+func (l *Loop) notifyTurnComplete() {
+	if l.onTurnComplete != nil {
+		l.onTurnComplete(l.history)
 	}
 }
 

@@ -12,7 +12,9 @@ import (
 
 	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/auth"
+	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/conversation"
+	"github.com/anthropics/claude-code-go/internal/session"
 	"github.com/anthropics/claude-code-go/internal/tools"
 )
 
@@ -76,8 +78,29 @@ func main() {
 		tokenProvider = auth.NewTokenProvider(store)
 	}
 
-	// Resolve model.
+	// Working directory.
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load settings from all levels.
+	settings, err := config.LoadSettings(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: error loading settings: %v\n", err)
+		settings = &config.Settings{}
+	}
+
+	// Resolve model: CLI flag > settings > default.
 	model := api.ModelClaude4Sonnet
+	if settings.Model != "" {
+		if resolved, ok := api.ModelAliases[settings.Model]; ok {
+			model = resolved
+		} else {
+			model = settings.Model
+		}
+	}
 	if *modelFlag != "" {
 		if resolved, ok := api.ModelAliases[*modelFlag]; ok {
 			model = resolved
@@ -93,41 +116,101 @@ func main() {
 		api.WithMaxTokens(*maxTokens),
 	)
 
-	// Working directory.
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting working directory: %v\n", err)
-		os.Exit(1)
-	}
+	// Build system prompt with settings context.
+	system := conversation.BuildSystemPrompt(cwd, settings)
 
-	// Build system prompt.
-	system := conversation.BuildSystemPrompt(cwd)
-
-	// Set up permission handler.
+	// Set up permission handler with rule-based evaluation.
 	var permHandler tools.PermissionHandler
 	if *dangerousNoPermissions {
 		permHandler = &tools.AlwaysAllowPermissionHandler{}
 	} else {
-		permHandler = tools.NewTerminalPermissionHandler()
+		terminalHandler := tools.NewTerminalPermissionHandler()
+		if len(settings.Permissions) > 0 {
+			permHandler = config.NewRuleBasedPermissionHandler(
+				settings.Permissions,
+				terminalHandler,
+			)
+		} else {
+			permHandler = terminalHandler
+		}
 	}
 
 	// Create tool registry with all Phase 2 tools.
 	registry := tools.NewRegistry(permHandler)
-	registry.Register(tools.NewBashTool(cwd))
+	if len(settings.Env) > 0 {
+		registry.Register(tools.NewBashToolWithEnv(cwd, settings.Env))
+	} else {
+		registry.Register(tools.NewBashTool(cwd))
+	}
 	registry.Register(tools.NewFileReadTool())
 	registry.Register(tools.NewFileEditTool())
 	registry.Register(tools.NewFileWriteTool())
 	registry.Register(tools.NewGlobTool(cwd))
 	registry.Register(tools.NewGrepTool(cwd))
 
+	// Session management.
+	sessionStore, err := session.NewStore(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: session store unavailable: %v\n", err)
+	}
+
+	// Check for session resume.
+	var history *conversation.History
+	var currentSession *session.Session
+
+	if *continueFlag && sessionStore != nil {
+		sess, err := sessionStore.MostRecent()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "No previous session found: %v\n", err)
+		} else {
+			history = conversation.NewHistoryFrom(sess.Messages)
+			currentSession = sess
+			fmt.Printf("Resuming session %s (%d messages)\n", sess.ID, len(sess.Messages))
+		}
+	}
+
+	if *resumeFlag != "" && sessionStore != nil {
+		sess, err := sessionStore.Load(*resumeFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Cannot load session %s: %v\n", *resumeFlag, err)
+			os.Exit(1)
+		}
+		history = conversation.NewHistoryFrom(sess.Messages)
+		currentSession = sess
+		fmt.Printf("Resuming session %s (%d messages)\n", sess.ID, len(sess.Messages))
+	}
+
+	// Create a new session if not resuming.
+	if currentSession == nil {
+		currentSession = &session.Session{
+			ID:    session.GenerateID(),
+			Model: model,
+			CWD:   cwd,
+		}
+	}
+
+	// Create compactor for auto-compaction.
+	compactor := conversation.NewCompactor(client)
+
 	// Create conversation loop with tools.
 	handler := &conversation.ToolAwareStreamHandler{}
 	loop := conversation.NewLoop(conversation.LoopConfig{
-		Client:   client,
-		System:   system,
-		Tools:    registry.Definitions(),
-		ToolExec: registry,
-		Handler:  handler,
+		Client:    client,
+		System:    system,
+		Tools:     registry.Definitions(),
+		ToolExec:  registry,
+		Handler:   handler,
+		History:   history,
+		Compactor: compactor,
+		OnTurnComplete: func(h *conversation.History) {
+			// Save session after each turn.
+			if sessionStore != nil && currentSession != nil {
+				currentSession.Messages = h.Messages()
+				if err := sessionStore.Save(currentSession); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to save session: %v\n", err)
+				}
+			}
+		},
 	})
 
 	// Handle initial prompt from arguments.
@@ -142,10 +225,6 @@ func main() {
 			os.Exit(0)
 		}
 	}
-
-	// Silence unused flag warnings for future features.
-	_ = continueFlag
-	_ = resumeFlag
 
 	// Interactive REPL.
 	if *printMode {
@@ -167,7 +246,7 @@ func main() {
 			continue
 		}
 
-		// Basic slash commands.
+		// Slash commands.
 		if strings.HasPrefix(line, "/") {
 			switch {
 			case line == "/help":
@@ -181,6 +260,20 @@ func main() {
 				os.Exit(0)
 			case line == "/version":
 				fmt.Printf("claude %s (Go)\n", version)
+				continue
+			case line == "/compact":
+				fmt.Println("Compacting conversation history...")
+				if err := loop.Compact(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "Compaction failed: %v\n", err)
+				} else {
+					fmt.Println("Compaction complete.")
+				}
+				continue
+			case line == "/cost":
+				fmt.Println("Token cost tracking not yet implemented.")
+				continue
+			case line == "/context":
+				fmt.Printf("Messages in history: %d\n", loop.History().Len())
 				continue
 			default:
 				fmt.Printf("Unknown command: %s (type /help for available commands)\n", line)
@@ -219,6 +312,9 @@ func printHelp() {
   /help     - Show this help
   /model    - Show current model
   /version  - Show version
+  /compact  - Compact conversation history
+  /context  - Show context usage info
+  /cost     - Show token usage and cost
   /quit     - Exit
 
 CLI flags:
