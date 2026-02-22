@@ -289,6 +289,40 @@ func toolInputSummary(name string, input json.RawMessage) string {
 		if s := extractString("pattern"); s != "" {
 			return fmt.Sprintf("/%s/", s)
 		}
+	case "Agent":
+		if s := extractString("description"); s != "" {
+			return s
+		}
+	case "TodoWrite":
+		return "updating task list"
+	case "AskUserQuestion":
+		return "asking user"
+	case "WebFetch":
+		if s := extractString("url"); s != "" {
+			return s
+		}
+	case "WebSearch":
+		if s := extractString("query"); s != "" {
+			return fmt.Sprintf("searching: %s", s)
+		}
+	case "NotebookEdit":
+		if s := extractString("notebook_path"); s != "" {
+			return s
+		}
+	case "ExitPlanMode":
+		return "plan ready"
+	case "Config":
+		if s := extractString("setting"); s != "" {
+			return s
+		}
+	case "EnterWorktree":
+		return "creating worktree"
+	case "TaskOutput":
+		if s := extractString("task_id"); s != "" {
+			return fmt.Sprintf("reading task %s", s)
+		}
+	case "TaskStop":
+		return "stopping task"
 	}
 	return ""
 }

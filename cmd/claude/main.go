@@ -135,7 +135,10 @@ func main() {
 		}
 	}
 
-	// Create tool registry with all Phase 2 tools.
+	// Background task store shared by Agent, TaskOutput, and TaskStop tools.
+	bgStore := tools.NewBackgroundTaskStore()
+
+	// Create tool registry with all tools.
 	registry := tools.NewRegistry(permHandler)
 	if len(settings.Env) > 0 {
 		registry.Register(tools.NewBashToolWithEnv(cwd, settings.Env))
@@ -147,6 +150,22 @@ func main() {
 	registry.Register(tools.NewFileWriteTool())
 	registry.Register(tools.NewGlobTool(cwd))
 	registry.Register(tools.NewGrepTool(cwd))
+
+	// Phase 4 tools.
+	registry.Register(tools.NewTodoWriteTool())
+	registry.Register(tools.NewAskUserTool())
+	registry.Register(tools.NewWebFetchTool(nil))
+	registry.Register(tools.NewWebSearchTool())
+	registry.Register(tools.NewNotebookEditTool())
+	registry.Register(tools.NewConfigTool(cwd))
+	registry.Register(tools.NewWorktreeTool(cwd))
+	registry.Register(tools.NewExitPlanModeTool())
+	registry.Register(tools.NewTaskOutputTool(bgStore))
+	registry.Register(tools.NewTaskStopTool(bgStore))
+
+	// Agent tool registered last — gets tool definitions that include everything above.
+	agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
+	registry.Register(agentTool)
 
 	// Session management.
 	sessionStore, err := session.NewStore(cwd)
