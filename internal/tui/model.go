@@ -31,6 +31,7 @@ type model struct {
 	cancelFn  context.CancelFunc
 	modelName string
 	version   string
+	mcpStatus MCPStatus // MCP manager for /mcp command; may be nil
 
 	// UI state.
 	mode          uiMode
@@ -77,6 +78,7 @@ func newModel(
 	modelName, version string,
 	initialPrompt string,
 	width int,
+	mcpStatus MCPStatus,
 ) model {
 	ti := newTextInput(width)
 	sp := newSpinner()
@@ -89,6 +91,7 @@ func newModel(
 		cancelFn:      cancelFn,
 		modelName:     modelName,
 		version:       version,
+		mcpStatus:     mcpStatus,
 		mode:          modeInput,
 		width:         width,
 		height:        24,

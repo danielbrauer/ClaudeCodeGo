@@ -11,14 +11,22 @@ import (
 	"github.com/anthropics/claude-code-go/internal/session"
 )
 
+// MCPStatus provides MCP server information to the TUI without importing
+// the mcp package directly (avoiding import cycles).
+type MCPStatus interface {
+	Servers() []string
+	ServerStatus(name string) string
+}
+
 // AppConfig bundles everything the TUI needs from main.go.
 type AppConfig struct {
-	Loop      *conversation.Loop
-	Session   *session.Session
-	SessStore *session.Store
-	Version   string
-	Model     string
-	PrintMode bool
+	Loop       *conversation.Loop
+	Session    *session.Session
+	SessStore  *session.Store
+	Version    string
+	Model      string
+	PrintMode  bool
+	MCPManager MCPStatus // *mcp.Manager; nil if no MCP servers configured
 }
 
 // App is the top-level TUI application. main.go creates it and calls Run.
@@ -59,6 +67,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.cfg.Version,
 		a.initialPrompt,
 		width,
+		a.cfg.MCPManager,
 	)
 
 	// Create the BT program (inline mode, no alt screen).

@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/claude-code-go/internal/auth"
 	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/conversation"
+	"github.com/anthropics/claude-code-go/internal/mcp"
 	"github.com/anthropics/claude-code-go/internal/session"
 	"github.com/anthropics/claude-code-go/internal/tools"
 	"github.com/anthropics/claude-code-go/internal/tui"
@@ -163,6 +164,31 @@ func main() {
 	registry.Register(tools.NewTaskOutputTool(bgStore))
 	registry.Register(tools.NewTaskStopTool(bgStore))
 
+	// Phase 6: MCP server initialization.
+	// Load MCP config and start servers before AgentTool so MCP tools
+	// are visible to sub-agents via registry.Definitions().
+	mcpConfig, err := mcp.LoadMCPConfig(cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: MCP config error: %v\n", err)
+	}
+
+	var mcpManager *mcp.Manager
+	if mcpConfig != nil && len(mcpConfig.MCPServers) > 0 {
+		mcpManager = mcp.NewManager(cwd)
+		if err := mcpManager.StartServers(ctx, mcpConfig.MCPServers, registry); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: MCP startup error: %v\n", err)
+		}
+		defer mcpManager.Shutdown()
+
+		// Register MCP management tools (these need the manager reference).
+		registry.Register(mcp.NewListMcpResourcesTool(mcpManager))
+		registry.Register(mcp.NewReadMcpResourceTool(mcpManager))
+		registry.Register(mcp.NewSubscribeMcpResourceTool(mcpManager))
+		registry.Register(mcp.NewUnsubscribeMcpResourceTool(mcpManager))
+		registry.Register(mcp.NewSubscribePollingTool(mcpManager))
+		registry.Register(mcp.NewUnsubscribePollingTool(mcpManager))
+	}
+
 	// Agent tool registered last — gets tool definitions that include everything above.
 	agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
 	registry.Register(agentTool)
@@ -255,11 +281,12 @@ func main() {
 
 	// Interactive mode: launch the TUI.
 	app := tui.New(tui.AppConfig{
-		Loop:      loop,
-		Session:   currentSession,
-		SessStore: sessionStore,
-		Version:   version,
-		Model:     model,
+		Loop:       loop,
+		Session:    currentSession,
+		SessStore:  sessionStore,
+		Version:    version,
+		Model:      model,
+		MCPManager: mcpManager,
 	})
 
 	if initialPrompt != "" {
