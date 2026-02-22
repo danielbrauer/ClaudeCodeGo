@@ -345,6 +345,7 @@ func main() {
 		MCPManager: mcpManager,
 		Skills:     loadedSkills,  // Phase 7
 		Hooks:      hookRunner,    // Phase 7
+		Settings:   settings,
 		RuleHandler: ruleHandler,
 		OnModelSwitch: func(newModel string) {
 			if currentSession != nil {

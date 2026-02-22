@@ -86,6 +86,18 @@ func newSlashRegistry() *slashRegistry {
 	})
 
 	r.register(SlashCommand{
+		Name:        "config",
+		Description: "Open config panel",
+		Execute:     nil, // handled specially in handleSubmit (needs mode switch)
+	})
+
+	r.register(SlashCommand{
+		Name:        "settings",
+		Description: "Open config panel",
+		Execute:     nil, // alias for config
+	})
+
+	r.register(SlashCommand{
 		Name:        "clear",
 		Description: "Clear conversation history and free up context",
 		Execute:     nil, // handled specially in handleSubmit (resets session state)
@@ -227,7 +239,7 @@ func (r *slashRegistry) helpText() string {
 	var b strings.Builder
 	b.WriteString("Available commands:\n")
 	for _, name := range r.names {
-		if name == "exit" || name == "reset" || name == "new" {
+		if name == "exit" || name == "reset" || name == "new" || name == "settings" {
 			continue // don't show aliases
 		}
 		cmd := r.commands[name]
