@@ -1,551 +1,840 @@
-# Phase 5: TUI — Integration Guide
+# Phase 6: MCP — Integration Guide
 
-Phase 5 replaces the current `fmt.Print`/`bufio.Scanner` UI with a rich terminal experience. The new `internal/tui/` package takes over all user-facing I/O: streaming text display, markdown rendering, syntax highlighting, diff views, tool progress, permission prompts, todo list display, and multi-line input editing.
+Phase 6 adds Model Context Protocol (MCP) support, enabling the CLI to connect
+to external tool servers. The new `internal/mcp/` package implements a JSON-RPC
+2.0 client over stdio and SSE transports, discovers tools from MCP servers at
+startup, and registers them in the existing tool registry so they participate in
+the agentic loop identically to built-in tools.
 
-**The TUI is a consumer of existing interfaces.** It does not change tool logic, API types, or the agentic loop. It replaces the thin presentation layer currently scattered across `main.go`, `loop.go` (stream handlers), `permission.go`, `todo.go`, and `askuser.go`.
+**MCP is an additive layer.** It does not modify the agentic loop, the API
+client, the streaming handler, the permission system, or the TUI. It plugs
+into the existing `Tool` interface, `Registry`, and `LoopConfig.Tools`
+pipeline. The model sees MCP tools alongside built-in tools in every API
+request, and invokes them the same way.
 
 ---
 
 ## What exists today
 
-### The REPL (`cmd/claude/main.go`, lines 248–311)
+### The Tool interface (`internal/tools/registry.go`, lines 14–29)
 
-The current interactive loop is minimal:
+Every tool — built-in or MCP — must satisfy this:
 
 ```go
-scanner := bufio.NewScanner(os.Stdin)
-for {
-    fmt.Print("> ")
-    if !scanner.Scan() { break }
-    line := strings.TrimSpace(scanner.Text())
-    // ... slash commands ...
-    loop.SendMessage(ctx, line)
+type Tool interface {
+    Name() string
+    Description() string
+    InputSchema() json.RawMessage
+    Execute(ctx context.Context, input json.RawMessage) (string, error)
+    RequiresPermission(input json.RawMessage) bool
 }
 ```
 
-**Problems the TUI solves:**
-- Single-line input only — no multi-line editing
-- No markdown rendering — assistant output is raw text
-- No syntax highlighting in code blocks
-- No diff display for FileEdit results
-- No spinner or progress indicator during API calls or tool execution
-- Slash commands are a flat `switch` block with no completion
-- No token/cost display in the UI chrome
+Key constraint: `Execute` returns `(string, error)`, not structured JSON. MCP
+tool wrappers must marshal their result to a string.
 
-**What replaces it:** A `tui.App` struct that owns the full terminal lifecycle. `main.go` creates it and calls `app.Run(ctx)` instead of the manual REPL loop.
-
-### The StreamHandler interface (`internal/api/streaming.go`, lines 77–86)
-
-This is **the** integration point between the API layer and the display layer:
+### The Registry (`internal/tools/registry.go`)
 
 ```go
-type StreamHandler interface {
-    OnMessageStart(msg MessageResponse)
-    OnContentBlockStart(index int, block ContentBlock)
-    OnTextDelta(index int, text string)
-    OnInputJSONDelta(index int, partialJSON string)
-    OnContentBlockStop(index int)
-    OnMessageDelta(delta MessageDeltaBody, usage *Usage)
-    OnMessageStop()
-    OnError(err error)
+type Registry struct {
+    tools      map[string]Tool
+    order      []string
+    permission PermissionHandler
+}
+
+func (r *Registry) Register(t Tool)
+func (r *Registry) Execute(ctx context.Context, name string, input []byte) (string, error)
+func (r *Registry) Definitions() []api.ToolDefinition
+```
+
+Execution pipeline:
+1. Look up tool by name
+2. If `tool.RequiresPermission(input)` → call `permission.RequestPermission()`
+3. If allowed → call `tool.Execute(ctx, input)`
+4. Return result string to the agentic loop
+
+MCP tool wrappers register like any other tool. No special-casing needed.
+
+### Tool definitions flow to the API (`internal/conversation/loop.go`)
+
+```go
+req := &api.CreateMessageRequest{
+    Messages: l.history.Messages(),
+    System:   l.system,
+    Tools:    l.tools,  // ← registry.Definitions() result
 }
 ```
 
-Today's `ToolAwareStreamHandler` (`loop.go`, lines 190–328) implements this with plain `fmt.Printf`. The TUI replaces it with a handler that:
-- Renders text deltas into a markdown-aware viewport (token by token)
-- Shows a spinner/progress bar during tool calls
-- Displays tool call summaries with icons and collapsible detail
-- Tracks and displays token usage from `OnMessageStart` and `OnMessageDelta`
+The loop stores `tools []api.ToolDefinition` at construction. MCP tool
+definitions must be included in this slice. Since `main.go` calls
+`registry.Definitions()` after all tools (including MCP) are registered,
+this works automatically.
 
-**The handler is injected via `LoopConfig.Handler`.** The loop calls the handler methods; the handler updates the terminal. No changes to the loop are needed.
-
-### The PermissionHandler interface (`internal/tools/registry.go`, lines 32–36)
+### Sub-agent tool inheritance (`internal/tools/agent.go`, lines 52–67)
 
 ```go
-type PermissionHandler interface {
-    RequestPermission(ctx context.Context, toolName string, input json.RawMessage) (bool, error)
+type AgentTool struct {
+    tools    []api.ToolDefinition      // snapshot of parent's definitions
+    toolExec conversation.ToolExecutor  // parent's registry (shared)
 }
 ```
 
-Today's `TerminalPermissionHandler` (`permission.go`) uses raw `fmt.Printf` and `bufio.Reader`. The TUI replaces it with a styled permission prompt rendered within the TUI framework — highlighting the tool name, showing a syntax-highlighted command preview for Bash, and offering y/n via key events rather than line-based stdin reading.
+Sub-agents receive the parent's tool definitions and registry reference.
+MCP tools registered before the `AgentTool` is created will be visible to
+sub-agents automatically, because `registry.Definitions()` is called at
+agent creation time (line 167 of `main.go`).
 
-**The handler is injected via `tools.NewRegistry(permHandler)`.** The registry calls `RequestPermission` before executing any tool where `RequiresPermission()` returns true.
-
-### The conversation loop (`internal/conversation/loop.go`)
+### Configuration (`internal/config/settings.go`)
 
 ```go
-type LoopConfig struct {
-    Client         *api.Client
-    System         []api.SystemBlock
-    Tools          []api.ToolDefinition
-    ToolExec       ToolExecutor
-    Handler        api.StreamHandler        // ← TUI provides this
-    History        *History
-    Compactor      *Compactor
-    OnTurnComplete func(history *History)   // ← TUI can hook into this
+type Settings struct {
+    Permissions []PermissionRule  `json:"permissions,omitempty"`
+    Model       string            `json:"model,omitempty"`
+    Env         map[string]string `json:"env,omitempty"`
+    Hooks       json.RawMessage   `json:"hooks,omitempty"`
+    Sandbox     json.RawMessage   `json:"sandbox,omitempty"`
 }
 ```
 
-The loop is **not modified** in Phase 5. It already accepts a `StreamHandler` and a turn-complete callback. The TUI plugs into both:
-- `Handler` → a TUI stream handler that renders to the terminal
-- `OnTurnComplete` → the TUI can update status (token count, session info) and trigger session save
+MCP server configuration lives in separate `.mcp.json` files (not in
+`settings.json`). Phase 6 adds a loader for these files and a new
+`MCPServers` field or a standalone config type.
 
-The loop's `SendMessage(ctx, userMessage) error` method is called by the TUI when the user submits input. The loop is **blocking** — it runs the full agentic cycle (API call → tool execution → repeat) and returns when done. The TUI needs to call this from a goroutine if the TUI framework requires a main-thread event loop (Bubble Tea does).
+### Permission rules (`internal/config/permissions.go`)
 
-### Tools that currently own their own I/O
+Permission rules use glob-like patterns:
 
-Several tools bypass the stream handler and write directly to stdout/stdin. The TUI must intercept or replace this:
+```go
+type PermissionRule struct {
+    Tool    string `json:"tool"`
+    Pattern string `json:"pattern,omitempty"`
+    Action  string `json:"action"` // "allow", "deny", "ask"
+}
+```
 
-| Tool | Current I/O | What the TUI needs to do |
-|------|-------------|--------------------------|
-| `TodoWriteTool` (`todo.go`, lines 89–105) | `fmt.Printf` to stdout for task list display | Provide a callback or output sink. The tool should call a `TodoRenderer` interface instead of printing. |
-| `AskUserTool` (`askuser.go`, lines 130–195) | `fmt.Printf` + `bufio.Reader` for interactive Q&A | Provide a `UserPrompter` interface. The TUI shows styled option pickers and collects input via the TUI event loop. |
-| `TerminalPermissionHandler` (`permission.go`, lines 25–47) | `fmt.Printf` + `bufio.Reader` for y/n prompts | Replace with a TUI-aware permission handler (already an interface — just provide a new implementation). |
+MCP tools need a naming convention that works with existing pattern matching.
+The convention is `mcp__<server>__<tool>` for tool names (matching the
+official CLI), which allows rules like:
 
-**The cleanest approach:** Define small callback interfaces that these tools accept at construction time. The tools call the callback for display; the TUI provides the implementation. If no callback is set, fall back to the current `fmt.Printf` behavior (keeps `-p` print mode working).
+```json
+{"tool": "mcp__github__*", "action": "allow"}
+```
 
 ---
 
-## Architecture of `internal/tui/`
+## MCP tool schemas from `sdk-tools.d.ts`
+
+The official CLI defines these MCP-related tools:
+
+### McpInput / McpOutput
+
+```typescript
+// Input: arbitrary — each MCP tool has its own schema
+export interface McpInput {
+  [k: string]: unknown;
+}
+
+// Output: string (MCP tool execution result)
+export type McpOutput = string;
+```
+
+Each discovered MCP tool becomes a separate `ToolDefinition` with its own
+`Name`, `Description`, and `InputSchema` from the server. The model calls
+them by name like any other tool.
+
+### ListMcpResources
+
+```typescript
+export interface ListMcpResourcesInput {
+  server?: string;  // optional filter
+}
+
+export type ListMcpResourcesOutput = {
+  uri: string;
+  name: string;
+  mimeType?: string;
+  description?: string;
+  server: string;
+}[];
+```
+
+### ReadMcpResource
+
+```typescript
+export interface ReadMcpResourceInput {
+  server: string;
+  uri: string;
+}
+
+export interface ReadMcpResourceOutput {
+  contents: {
+    uri: string;
+    mimeType?: string;
+    text?: string;
+  }[];
+}
+```
+
+### SubscribeMcpResource / UnsubscribeMcpResource
+
+```typescript
+export interface SubscribeMcpResourceInput {
+  server: string;
+  uri: string;
+  reason?: string;
+}
+export interface SubscribeMcpResourceOutput {
+  subscribed: boolean;
+  subscriptionId: string;
+}
+
+export interface UnsubscribeMcpResourceInput {
+  server?: string;
+  uri?: string;
+  subscriptionId?: string;
+}
+export interface UnsubscribeMcpResourceOutput {
+  unsubscribed: boolean;
+}
+```
+
+### SubscribePolling / UnsubscribePolling
+
+```typescript
+export interface SubscribePollingInput {
+  type: "tool" | "resource";
+  server: string;
+  toolName?: string;
+  arguments?: { [k: string]: unknown };
+  uri?: string;
+  intervalMs: number;  // minimum 1000ms, default 5000ms
+  reason?: string;
+}
+export interface SubscribePollingOutput {
+  subscribed: boolean;
+  subscriptionId: string;
+}
+
+export interface UnsubscribePollingInput {
+  subscriptionId?: string;
+  server?: string;
+  target?: string;
+}
+export interface UnsubscribePollingOutput {
+  unsubscribed: boolean;
+}
+```
+
+---
+
+## Architecture of `internal/mcp/`
 
 ### Proposed file structure
 
 ```
-internal/tui/
-├── app.go          # App struct, Run() loop, wiring
-├── input.go        # Multi-line input editor, key bindings
-├── output.go       # Markdown rendering, syntax highlighting, diff display
-├── stream.go       # StreamHandler implementation for the TUI
-├── permission.go   # TUI permission prompt (implements tools.PermissionHandler)
-├── progress.go     # Spinner, tool execution indicators
-├── slash.go        # Slash command parsing, tab completion
-├── todo.go         # Todo list renderer component
-├── status.go       # Status bar: model, token count, cost, session ID
-└── theme.go        # Colors, styles, box drawing
+internal/mcp/
+├── client.go        # MCPClient interface, JSON-RPC request/response
+├── stdio.go         # stdio transport (subprocess management)
+├── sse.go           # SSE transport (HTTP streaming)
+├── types.go         # JSON-RPC 2.0 types, MCP protocol types
+├── config.go        # .mcp.json loading from project and user dirs
+├── manager.go       # Server lifecycle: init → discover → register → shutdown
+└── tools.go         # MCPToolWrapper, ListMcpResources, ReadMcpResource, etc.
 ```
 
-### The `App` struct (`tui/app.go`)
-
-This is the entry point. `main.go` creates it and calls `Run`:
+### Core types (`internal/mcp/types.go`)
 
 ```go
-type App struct {
-    loop       *conversation.Loop
-    client     *api.Client
-    session    *session.Session
-    sessStore  *session.Store
-    version    string
-    model      string
+// JSON-RPC 2.0
+
+type JSONRPCRequest struct {
+    JSONRPC string          `json:"jsonrpc"`
+    ID      int64           `json:"id"`
+    Method  string          `json:"method"`
+    Params  json.RawMessage `json:"params,omitempty"`
 }
 
-func New(cfg AppConfig) *App
-func (a *App) Run(ctx context.Context) error
+type JSONRPCResponse struct {
+    JSONRPC string          `json:"jsonrpc"`
+    ID      int64           `json:"id"`
+    Result  json.RawMessage `json:"result,omitempty"`
+    Error   *JSONRPCError   `json:"error,omitempty"`
+}
+
+type JSONRPCError struct {
+    Code    int             `json:"code"`
+    Message string          `json:"message"`
+    Data    json.RawMessage `json:"data,omitempty"`
+}
+
+// MCP protocol
+
+type ServerConfig struct {
+    Command string            `json:"command"`
+    Args    []string          `json:"args,omitempty"`
+    Env     map[string]string `json:"env,omitempty"`
+    URL     string            `json:"url,omitempty"` // for SSE transport
+}
+
+type MCPToolDef struct {
+    Name        string          `json:"name"`
+    Description string          `json:"description,omitempty"`
+    InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+type MCPResource struct {
+    URI         string `json:"uri"`
+    Name        string `json:"name"`
+    MIMEType    string `json:"mimeType,omitempty"`
+    Description string `json:"description,omitempty"`
+}
+
+type MCPResourceContent struct {
+    URI      string `json:"uri"`
+    MIMEType string `json:"mimeType,omitempty"`
+    Text     string `json:"text,omitempty"`
+}
 ```
 
-`AppConfig` bundles everything from `main.go` that the TUI needs:
+### The Transport interface (`internal/mcp/client.go`)
+
+```go
+type Transport interface {
+    // Send sends a JSON-RPC request and returns the response.
+    Send(ctx context.Context, req *JSONRPCRequest) (*JSONRPCResponse, error)
+
+    // Close shuts down the transport.
+    Close() error
+}
+```
+
+Two implementations:
+
+**StdioTransport** (`stdio.go`): Launches a subprocess via `os/exec.Cmd`,
+writes JSON-RPC requests to stdin, reads responses from stdout. Each
+request is a single line of JSON followed by `\n`. Responses are read
+line-by-line. The subprocess's stderr is captured for error diagnostics.
+
+**SSETransport** (`sse.go`): Connects to an HTTP endpoint. Sends requests
+via POST. Reads streaming responses via Server-Sent Events. The event
+stream carries JSON-RPC responses as `data:` fields.
+
+### The MCPClient (`internal/mcp/client.go`)
+
+```go
+type MCPClient struct {
+    transport  Transport
+    serverName string
+    nextID     int64
+    mu         sync.Mutex
+
+    // Capabilities negotiated during initialization.
+    capabilities ServerCapabilities
+}
+
+func NewMCPClient(serverName string, transport Transport) *MCPClient
+
+func (c *MCPClient) Initialize(ctx context.Context) error
+func (c *MCPClient) ListTools(ctx context.Context) ([]MCPToolDef, error)
+func (c *MCPClient) CallTool(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
+func (c *MCPClient) ListResources(ctx context.Context) ([]MCPResource, error)
+func (c *MCPClient) ReadResource(ctx context.Context, uri string) ([]MCPResourceContent, error)
+func (c *MCPClient) Close() error
+```
+
+### The MCP lifecycle
+
+```
+1. Load .mcp.json config files
+2. For each server config:
+   a. Create transport (stdio or SSE based on config fields)
+   b. Create MCPClient
+   c. Call client.Initialize() — JSON-RPC "initialize" method
+   d. Send "notifications/initialized" notification
+   e. Call client.ListTools() — JSON-RPC "tools/list" method
+   f. For each discovered tool, wrap in MCPToolWrapper
+   g. Register wrapper in the tool registry
+3. Also register the built-in MCP management tools:
+   - ListMcpResources
+   - ReadMcpResource
+   - SubscribeMcpResource / UnsubscribeMcpResource
+   - SubscribePolling / UnsubscribePolling
+4. On CLI exit, call client.Close() for each server
+```
+
+---
+
+## Integration with existing code
+
+### MCPToolWrapper (`internal/mcp/tools.go`)
+
+This is the bridge between MCP and the `tools.Tool` interface:
+
+```go
+type MCPToolWrapper struct {
+    serverName  string
+    toolName    string
+    displayName string       // "mcp__<server>__<tool>"
+    description string
+    inputSchema json.RawMessage
+    client      *MCPClient
+}
+```
+
+Implementing the `Tool` interface:
+
+```go
+func (w *MCPToolWrapper) Name() string {
+    return w.displayName  // e.g. "mcp__github__create_issue"
+}
+
+func (w *MCPToolWrapper) Description() string {
+    return w.description
+}
+
+func (w *MCPToolWrapper) InputSchema() json.RawMessage {
+    return w.inputSchema  // pass through from server's tools/list
+}
+
+func (w *MCPToolWrapper) RequiresPermission(_ json.RawMessage) bool {
+    return true  // MCP tools always require permission
+}
+
+func (w *MCPToolWrapper) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+    result, err := w.client.CallTool(ctx, w.toolName, input)
+    if err != nil {
+        return "", err
+    }
+    // Result is JSON — marshal to string for the Tool interface.
+    return string(result), nil
+}
+```
+
+### Manager (`internal/mcp/manager.go`)
+
+Coordinates server lifecycle and exposes a clean API for `main.go`:
+
+```go
+type Manager struct {
+    clients map[string]*MCPClient  // keyed by server name
+    mu      sync.Mutex
+}
+
+func NewManager() *Manager
+
+// StartServers loads config, connects to servers, discovers tools,
+// and registers them in the provided registry.
+func (m *Manager) StartServers(ctx context.Context, configs map[string]ServerConfig, registry *tools.Registry) error
+
+// Shutdown gracefully closes all server connections.
+func (m *Manager) Shutdown()
+
+// Servers returns the list of connected server names (for /mcp status).
+func (m *Manager) Servers() []string
+
+// Client returns the client for a named server (for resource tools).
+func (m *Manager) Client(name string) (*MCPClient, bool)
+```
+
+### Config loading (`internal/mcp/config.go`)
+
+```go
+type MCPConfig struct {
+    MCPServers map[string]ServerConfig `json:"mcpServers"`
+}
+
+// LoadMCPConfig loads and merges .mcp.json from project and user dirs.
+func LoadMCPConfig(cwd string) (*MCPConfig, error)
+```
+
+Load order (lower to higher priority, higher wins per server name):
+1. `~/.mcp.json` (user-level)
+2. `.mcp.json` (project-level, in cwd)
+
+The merge is per server name: project-level overrides user-level for the
+same server name. Servers from both levels that don't conflict are included.
+
+### Changes to `cmd/claude/main.go`
+
+Insert MCP initialization **after** built-in tool registration and
+**before** the `AgentTool` creation:
+
+```go
+// ... existing tool registration (lines 141–164) ...
+
+// Phase 6: MCP server initialization.
+mcpConfig, err := mcp.LoadMCPConfig(cwd)
+if err != nil {
+    fmt.Fprintf(os.Stderr, "Warning: MCP config error: %v\n", err)
+}
+
+var mcpManager *mcp.Manager
+if mcpConfig != nil && len(mcpConfig.MCPServers) > 0 {
+    mcpManager = mcp.NewManager()
+    if err := mcpManager.StartServers(ctx, mcpConfig.MCPServers, registry); err != nil {
+        fmt.Fprintf(os.Stderr, "Warning: MCP startup error: %v\n", err)
+    }
+    defer mcpManager.Shutdown()
+
+    // Register MCP management tools (these need the manager reference).
+    registry.Register(mcp.NewListMcpResourcesTool(mcpManager))
+    registry.Register(mcp.NewReadMcpResourceTool(mcpManager))
+    registry.Register(mcp.NewSubscribeMcpResourceTool(mcpManager))
+    registry.Register(mcp.NewUnsubscribeMcpResourceTool(mcpManager))
+    registry.Register(mcp.NewSubscribePollingTool(mcpManager))
+    registry.Register(mcp.NewUnsubscribePollingTool(mcpManager))
+}
+
+// Agent tool registered last — now includes MCP tools in definitions.
+agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
+registry.Register(agentTool)
+```
+
+**Ordering matters.** MCP tools must be registered before `AgentTool` so
+that `registry.Definitions()` includes them when building the sub-agent's
+tool list.
+
+### Changes to `internal/tui/slash.go`
+
+Add an `/mcp` command to the slash registry:
+
+```go
+r.register(SlashCommand{
+    Name:        "mcp",
+    Description: "Show MCP server status",
+    Execute: func(m *model) string {
+        // m would need a reference to the mcpManager
+        // or this can be a simple status listing
+        return "MCP server status (not yet implemented)"
+    },
+})
+```
+
+To make the MCP manager accessible to the TUI, add it to `AppConfig`:
 
 ```go
 type AppConfig struct {
-    Loop        *conversation.Loop
-    Client      *api.Client
-    Session     *session.Session
-    SessStore   *session.Store
-    Version     string
-    Model       string
-    PrintMode   bool   // if true, use plain PrintStreamHandler instead of TUI
+    Loop       *conversation.Loop
+    Session    *session.Session
+    SessStore  *session.Store
+    Version    string
+    Model      string
+    PrintMode  bool
+    MCPManager interface{}  // *mcp.Manager, interface{} to avoid import cycle
 }
 ```
 
-### How `main.go` changes
+### Permission rules for MCP tools
 
-The current `main.go` (lines 214–311) does two things after creating the loop:
-1. Handles an initial prompt from CLI args
-2. Runs the interactive REPL
+MCP tools use the naming convention `mcp__<server>__<tool>`. Permission
+rules can match these with glob patterns:
 
-Phase 5 replaces the REPL section. The new flow:
+```json
+[
+  {"tool": "mcp__github__*", "action": "allow"},
+  {"tool": "mcp__*", "action": "ask"}
+]
+```
 
-```go
-// Create the TUI app.
-app := tui.New(tui.AppConfig{
-    Loop:      loop,
-    Client:    client,
-    Session:   currentSession,
-    SessStore: sessionStore,
-    Version:   version,
-    Model:     model,
-    PrintMode: *printMode,
-})
+The existing `RuleBasedPermissionHandler` in `config/permissions.go` already
+supports glob matching via doublestar, so this works without modification.
 
-// Handle initial prompt.
-if len(flag.Args()) > 0 {
-    prompt := strings.Join(flag.Args(), " ")
-    if *printMode {
-        // Print mode: plain handler, no TUI.
-        loop.SendMessage(ctx, prompt)
-        os.Exit(0)
+---
+
+## JSON-RPC 2.0 protocol details
+
+### Initialize handshake
+
+Request:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "claude-code",
+      "version": "1.0.0"
     }
-    app.SetInitialPrompt(prompt)
-}
-
-// Run the TUI (or exit if print mode with no args).
-if *printMode {
-    os.Exit(0)
-}
-if err := app.Run(ctx); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1)
+  }
 }
 ```
 
-**Print mode (`-p`)** should continue using `PrintStreamHandler` directly — no TUI framework. This keeps scripting/piping simple.
+Response:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": {},
+      "resources": {}
+    },
+    "serverInfo": {
+      "name": "server-name",
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+Followed by the client sending a notification (no `id`):
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+```
+
+### Tool discovery
+
+Request:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list",
+  "params": {}
+}
+```
+
+Response:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "create_issue",
+        "description": "Create a GitHub issue",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string"},
+            "body": {"type": "string"}
+          },
+          "required": ["title"]
+        }
+      }
+    ]
+  }
+}
+```
+
+### Tool execution
+
+Request:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "create_issue",
+    "arguments": {"title": "Bug report", "body": "..."}
+  }
+}
+```
+
+Response:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {"type": "text", "text": "Issue #42 created successfully"}
+    ]
+  }
+}
+```
+
+The `tools/call` result contains a `content` array with text blocks.
+`MCPToolWrapper.Execute` should extract and concatenate the text content.
+
+### Resource operations
+
+`resources/list` and `resources/read` follow the same request/response
+pattern. These are exposed via the `ListMcpResources` and `ReadMcpResource`
+built-in tools, not via MCP tool wrappers.
 
 ---
 
-## Interface-by-interface integration
+## Transport implementation details
 
-### 1. StreamHandler → TUI renderer
-
-**File:** `internal/tui/stream.go`
-
-The TUI provides its own `api.StreamHandler` implementation:
+### stdio transport (`internal/mcp/stdio.go`)
 
 ```go
-type TUIStreamHandler struct {
-    app *App  // or a channel/callback to push updates into the TUI event loop
+type StdioTransport struct {
+    cmd    *exec.Cmd
+    stdin  io.WriteCloser
+    stdout *bufio.Scanner
+    stderr bytes.Buffer
+    mu     sync.Mutex
+}
+
+func NewStdioTransport(command string, args []string, env map[string]string) (*StdioTransport, error)
+```
+
+Implementation notes:
+- Start the subprocess with `exec.CommandContext` so the process is killed
+  on context cancellation
+- Set the working directory to the project directory
+- Merge server env vars with the current environment (server's `env` field
+  overrides)
+- Write requests as single JSON lines to stdin
+- Read responses as single JSON lines from stdout (buffered scanner)
+- Capture stderr for error diagnostics
+- Use a mutex around send/receive to serialize requests (MCP servers may
+  not support concurrent requests)
+- Close() kills the subprocess gracefully (SIGTERM, then SIGKILL after
+  timeout)
+
+### SSE transport (`internal/mcp/sse.go`)
+
+```go
+type SSETransport struct {
+    baseURL string
+    client  *http.Client
+    mu      sync.Mutex
+}
+
+func NewSSETransport(url string) *SSETransport
+```
+
+Implementation notes:
+- POST requests to the server's endpoint
+- Read SSE responses from a long-lived GET connection
+- Parse SSE events the same way as `api/streaming.go` (can share or
+  duplicate the parser)
+- Handle reconnection on connection drop
+
+### Choosing transport
+
+The config determines which transport to use:
+
+```go
+func transportForConfig(cfg ServerConfig, cwd string) (Transport, error) {
+    if cfg.URL != "" {
+        return NewSSETransport(cfg.URL), nil
+    }
+    return NewStdioTransport(cfg.Command, cfg.Args, cfg.Env, cwd)
 }
 ```
 
-**Method mapping:**
-
-| StreamHandler method | TUI behavior |
-|----------------------|-------------|
-| `OnMessageStart(msg)` | Record `msg.Usage.InputTokens`, update status bar. Start a new assistant message region in the viewport. |
-| `OnContentBlockStart(index, block)` | If `block.Type == "tool_use"`: show spinner with tool name. If `text`: prepare text rendering region. |
-| `OnTextDelta(index, text)` | Append `text` to the current markdown render buffer. Re-render the visible portion. This is the hot path — must be fast. |
-| `OnInputJSONDelta(index, json)` | Accumulate tool input JSON (same as today). Optionally show a progress dot or byte count. |
-| `OnContentBlockStop(index)` | If tool_use: stop spinner, show tool summary line (using `toolInputSummary` logic). If text: finalize the markdown block. |
-| `OnMessageDelta(delta, usage)` | Update `OutputTokens` in status bar. Record `stop_reason`. |
-| `OnMessageStop()` | Finalize the assistant message. Re-enable user input. Update token/cost display. |
-| `OnError(err)` | Display error in a styled error region (red, bordered). |
-
-**Threading concern:** If using Bubble Tea, stream handler methods are called from the goroutine running `loop.SendMessage`. They must not directly mutate TUI state. Instead, send `tea.Msg` values via a channel or `program.Send()`:
-
-```go
-func (h *TUIStreamHandler) OnTextDelta(index int, text string) {
-    h.program.Send(TextDeltaMsg{Index: index, Text: text})
-}
-```
-
-The Bubble Tea `Update` function processes these messages on the main goroutine.
-
-### 2. PermissionHandler → TUI permission prompt
-
-**File:** `internal/tui/permission.go`
-
-```go
-type TUIPermissionHandler struct {
-    program *tea.Program  // or a request/response channel pair
-}
-
-func (h *TUIPermissionHandler) RequestPermission(
-    ctx context.Context, toolName string, input json.RawMessage,
-) (bool, error)
-```
-
-**Interaction pattern:**
-1. The agentic loop calls `RequestPermission` from its goroutine.
-2. The handler sends a `PermissionRequestMsg` to the TUI event loop.
-3. The TUI renders a styled prompt: tool name, action summary, y/n hint.
-4. The user presses a key (y/n/a for always-allow).
-5. The TUI sends the result back to the handler via a channel.
-6. The handler returns `(true/false, nil)` to the registry.
-
-This is a **synchronous call from the loop's perspective** but async from the TUI's perspective. Use a channel pair:
-
-```go
-type permRequest struct {
-    toolName string
-    input    json.RawMessage
-    result   chan bool
-}
-```
-
-### 3. TodoWrite → TUI todo display
-
-**File:** `internal/tui/todo.go`
-
-Currently `TodoWriteTool.Execute` calls `fmt.Printf` directly (lines 89–105). Two options:
-
-**Option A: Callback interface (preferred)**
-
-Define a renderer interface in the tools package:
-
-```go
-// internal/tools/todo.go
-type TodoRenderer interface {
-    RenderTodos(todos []TodoItem)
-}
-```
-
-`TodoWriteTool` accepts an optional renderer:
-
-```go
-func NewTodoWriteTool() *TodoWriteTool                              // default: fmt.Printf
-func NewTodoWriteToolWithRenderer(r TodoRenderer) *TodoWriteTool    // TUI provides this
-```
-
-**Option B: Remove print from tool, render in stream handler**
-
-The tool returns JSON only. The TUI stream handler inspects `OnContentBlockStop` for `TodoWrite` tool calls, parses the result JSON, and renders the todo list in a dedicated TUI region. This is cleaner (tools don't do I/O) but requires the stream handler to know about tool semantics.
-
-### 4. AskUserQuestion → TUI option picker
-
-**File:** `internal/tui/askuser.go` or incorporated into `permission.go`
-
-Same pattern as the permission handler. Currently `AskUserTool` reads from stdin directly. Replace with a `UserPrompter` interface:
-
-```go
-// internal/tools/askuser.go
-type UserPrompter interface {
-    AskQuestion(ctx context.Context, question AskUserQuestionItem) (string, error)
-}
-```
-
-The TUI implementation renders a styled picker with numbered options, arrow key navigation, and "Other" free-text input. The tool calls the prompter instead of `fmt.Printf`/`reader.ReadString`.
-
-### 5. Slash commands → TUI command dispatch
-
-**File:** `internal/tui/slash.go`
-
-The current slash command handling (`main.go`, lines 269–301) is a `switch` block. Move this into the TUI as a command registry:
-
-```go
-type SlashCommand struct {
-    Name        string
-    Description string
-    Execute     func(app *App, args string) error
-}
-```
-
-Built-in commands (matching the official CLI):
-
-| Command | Action |
-|---------|--------|
-| `/help` | Show help in a styled panel |
-| `/model` | Show current model (or switch if arg provided) |
-| `/version` | Show version |
-| `/compact` | Call `loop.Compact(ctx)`, show result |
-| `/cost` | Show cumulative token usage and estimated cost |
-| `/context` | Show context window usage breakdown |
-| `/quit` | Clean exit |
-| `/memory` | Open CLAUDE.md in `$EDITOR` |
-| `/hooks` | List configured hooks |
-| `/agents` | List sub-agents |
-| `/mcp` | Show MCP server status |
-| `/init` | Create `.claude/CLAUDE.md` |
-| `/doctor` | Run diagnostics |
-| `/fast` | Toggle fast mode |
-
-The TUI input handler checks for `/` prefix, autocompletes command names on Tab, and dispatches.
+If `url` is set → SSE transport. Otherwise → stdio transport using
+`command` and `args`.
 
 ---
 
-## Key data flows
+## Built-in MCP management tools
 
-### User sends a message
+These are standard `tools.Tool` implementations that live in
+`internal/mcp/tools.go` and delegate to the `Manager`:
 
-```
-User types text → Input editor captures it
-                → App calls loop.SendMessage(ctx, text) in a goroutine
-                → Loop builds API request, calls client.CreateMessageStream
-                → SSE events arrive → StreamHandler methods called
-                → TUI receives messages, updates display
-                → If tool_use: loop calls registry.Execute
-                → If permission needed: PermissionHandler.RequestPermission
-                → TUI shows prompt, user responds
-                → Tool executes, result added to history
-                → Loop continues until end_turn
-                → OnMessageStop → TUI re-enables input
-```
+| Tool | Purpose | Needs |
+|------|---------|-------|
+| `ListMcpResources` | List resources across all servers | `Manager.Client()` for each server |
+| `ReadMcpResource` | Read a resource by server + URI | `Manager.Client(server)` |
+| `SubscribeMcpResource` | Subscribe to resource changes | `Manager.Client(server)` + subscription store |
+| `UnsubscribeMcpResource` | Unsubscribe from changes | Subscription store |
+| `SubscribePolling` | Poll a tool or resource on interval | Goroutine manager for periodic calls |
+| `UnsubscribePolling` | Stop polling | Cancel the polling goroutine |
 
-### Token tracking
-
-Token data arrives in two places:
-
-1. `OnMessageStart(msg)` → `msg.Usage.InputTokens` (how many input tokens this request consumed)
-2. `OnMessageDelta(delta, usage)` → `usage.OutputTokens` (final output token count)
-
-The TUI accumulates these across the session for the `/cost` command:
-
-```go
-type TokenTracker struct {
-    TotalInputTokens  int
-    TotalOutputTokens int
-    TotalCacheRead    int
-    TotalCacheWrite   int
-    TurnCount         int
-}
-```
-
-Update on every `OnMessageStart` and `OnMessageDelta`. Display in the status bar and via `/cost`.
-
-### Markdown rendering
-
-Text arrives as incremental deltas via `OnTextDelta`. The TUI must:
-
-1. Buffer text into a complete markdown document (append each delta)
-2. Re-render the visible portion after each delta
-3. Handle partial markdown gracefully (e.g., an unclosed code fence during streaming)
-
-**Rendering strategy:**
-- Use `charmbracelet/glamour` for full markdown → ANSI rendering
-- Re-render the entire accumulated text on each delta (glamour is fast enough for this)
-- OR use a simpler line-by-line renderer that handles code fences, bold, italic, links, and lists without re-rendering everything
-- Show a cursor/blinking indicator at the end of streaming text
-
-**Code blocks** need syntax highlighting. Glamour uses `alecthomas/chroma` under the hood. Detect the language from the code fence annotation (` ```go `) and apply the appropriate lexer.
-
-### Diff display for FileEdit
-
-When `FileEdit` executes, it returns a success message. To show a diff, the TUI can either:
-
-**Option A:** Intercept the tool call in `OnContentBlockStop`, parse the `old_string`/`new_string` from the assembled JSON input, and render an inline diff view with red/green lines.
-
-**Option B:** Add a hook in the tool executor that emits a "tool completed" event with structured data the TUI can render. This is cleaner but requires a new callback:
-
-```go
-type ToolEventHandler interface {
-    OnToolStart(name string, input json.RawMessage)
-    OnToolComplete(name string, input json.RawMessage, output string, err error)
-}
-```
-
-The `ToolAwareStreamHandler` already has the tool name and assembled JSON at `OnContentBlockStop` time, so Option A is simpler and requires no interface changes.
+None of these tools require permission (they're resource/subscription
+management, not arbitrary execution). The discovered MCP tools themselves
+do require permission (set in `MCPToolWrapper.RequiresPermission`).
 
 ---
 
-## Changes to existing files
+## Error handling
+
+| Failure | Behavior |
+|---------|----------|
+| `.mcp.json` missing | No MCP servers loaded; silent (not an error) |
+| `.mcp.json` parse error | Warning to stderr; continue without MCP |
+| Server subprocess fails to start | Warning; skip that server, continue with others |
+| `initialize` handshake fails | Warning; skip that server |
+| `tools/list` fails | Warning; server registered but with no tools |
+| Tool execution fails | Return error to agentic loop (same as built-in tools) |
+| Server crashes mid-session | Tool execution returns error; no automatic restart |
+| Context cancelled (Ctrl+C) | Subprocess killed via context; graceful shutdown |
+
+---
+
+## Dependencies
+
+**No new external dependencies.** Everything uses the standard library:
+- `encoding/json` for JSON-RPC marshaling
+- `os/exec` for subprocess management
+- `bufio` for line-based stdio I/O
+- `net/http` for SSE transport
+- `sync` for mutex around transport access
+- `context` for cancellation
+
+---
+
+## Files changed
 
 | File | Change |
 |------|--------|
-| `internal/tui/app.go` | **New.** Main TUI application struct, `Run()` method. |
-| `internal/tui/input.go` | **New.** Multi-line input editor with key bindings. |
-| `internal/tui/output.go` | **New.** Markdown rendering, code highlighting, diff display. |
-| `internal/tui/stream.go` | **New.** `api.StreamHandler` implementation for the TUI. |
-| `internal/tui/permission.go` | **New.** `tools.PermissionHandler` implementation for the TUI. |
-| `internal/tui/progress.go` | **New.** Spinner and progress indicators. |
-| `internal/tui/slash.go` | **New.** Slash command registry and dispatch. |
-| `internal/tui/todo.go` | **New.** Todo list rendering component. |
-| `internal/tui/status.go` | **New.** Status bar (model, tokens, cost, session). |
-| `internal/tui/theme.go` | **New.** Color palette, box styles, ANSI constants. |
-| `cmd/claude/main.go` | **Modify.** Replace REPL loop (lines 248–311) with `tui.App` creation and `app.Run()`. Keep print mode as-is. |
-| `internal/tools/todo.go` | **Modify.** Add optional `TodoRenderer` callback. Remove direct `fmt.Printf`. |
-| `internal/tools/askuser.go` | **Modify.** Add optional `UserPrompter` callback. Remove direct `fmt.Printf`/`bufio.Reader`. |
-| `internal/tools/permission.go` | **No change.** `TerminalPermissionHandler` stays as the fallback for print mode. TUI provides its own `PermissionHandler` implementation. |
-| `internal/conversation/loop.go` | **No change.** The loop already accepts `StreamHandler` and `OnTurnComplete`. The two stream handlers (`PrintStreamHandler`, `ToolAwareStreamHandler`) stay as fallbacks for non-TUI modes. |
-| `internal/api/streaming.go` | **No change.** `StreamHandler` interface is sufficient. |
-| `go.mod` | **Modify.** Add TUI dependencies. |
+| `internal/mcp/types.go` | **New.** JSON-RPC 2.0 types, MCP protocol types |
+| `internal/mcp/client.go` | **New.** Transport interface, MCPClient |
+| `internal/mcp/stdio.go` | **New.** Subprocess-based stdio transport |
+| `internal/mcp/sse.go` | **New.** HTTP SSE transport |
+| `internal/mcp/config.go` | **New.** `.mcp.json` loader |
+| `internal/mcp/manager.go` | **New.** Server lifecycle management |
+| `internal/mcp/tools.go` | **New.** MCPToolWrapper + resource/subscription tools |
+| `cmd/claude/main.go` | **Modify.** Add MCP initialization between tool registration and AgentTool creation |
+| `internal/tui/slash.go` | **Modify.** Add `/mcp` command |
+| `internal/tui/app.go` | **Modify.** Add MCPManager to AppConfig (optional) |
 
----
-
-## Dependencies to add
-
-| Package | Purpose | Notes |
-|---------|---------|-------|
-| `github.com/charmbracelet/bubbletea` | TUI framework | Event loop, model-view-update pattern. Alternative: `tcell` for lower-level control. |
-| `github.com/charmbracelet/lipgloss` | Terminal styling | Colors, borders, padding, alignment. |
-| `github.com/charmbracelet/glamour` | Markdown rendering | Converts markdown → styled ANSI. Uses chroma for syntax highlighting. |
-| `github.com/charmbracelet/bubbles` | Pre-built components | Text input, spinner, viewport, list, etc. |
-
-The Charm stack (bubbletea + lipgloss + glamour + bubbles) is the standard choice for Go TUIs. It provides everything needed and is actively maintained.
-
-**Alternative:** `tcell` + manual rendering. More control, more work. Only consider if Bubble Tea's model-view-update pattern doesn't fit well with the streaming handler pattern (it does — Bubble Tea's `program.Send()` is designed for exactly this).
-
----
-
-## Bubble Tea integration pattern
-
-Bubble Tea uses the Elm architecture: `Model` → `Update(msg) → Model` → `View() → string`.
-
-The key challenge is bridging the **blocking** agentic loop with Bubble Tea's **non-blocking** event loop.
-
-### The goroutine bridge
-
-```go
-type model struct {
-    // ... TUI state ...
-    loopDone chan error    // signals when the agentic loop finishes
-}
-
-// When user submits input:
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    switch msg := msg.(type) {
-    case SubmitMsg:
-        return m, func() tea.Msg {
-            err := m.loop.SendMessage(m.ctx, msg.Text)
-            return LoopDoneMsg{Err: err}
-        }
-    case TextDeltaMsg:
-        m.outputBuffer += msg.Text
-        return m, nil
-    case ToolStartMsg:
-        m.showSpinner = true
-        return m, m.spinner.Tick
-    case PermissionRequestMsg:
-        m.permissionPending = &msg
-        return m, nil
-    // ...
-    }
-}
-```
-
-The stream handler sends `tea.Msg` values via `program.Send()`. The `Update` function processes them and updates the model. `View()` renders the current state.
-
-### Message types
-
-Define one `tea.Msg` type per stream handler event:
-
-```go
-type MessageStartMsg struct { Usage api.Usage }
-type TextDeltaMsg struct { Index int; Text string }
-type InputJSONDeltaMsg struct { Index int; JSON string }
-type ContentBlockStartMsg struct { Index int; Block api.ContentBlock }
-type ContentBlockStopMsg struct { Index int; Name string; Input json.RawMessage }
-type MessageDeltaMsg struct { Delta api.MessageDeltaBody; Usage *api.Usage }
-type MessageStopMsg struct{}
-type StreamErrorMsg struct { Err error }
-type LoopDoneMsg struct { Err error }
-type PermissionRequestMsg struct { ToolName string; Input json.RawMessage; Result chan bool }
-type TodoUpdateMsg struct { Todos []tools.TodoItem }
-type AskUserMsg struct { Question tools.AskUserQuestionItem; Result chan string }
-```
+No changes needed to:
+- `internal/tools/registry.go` — MCP tools use the existing `Tool` interface
+- `internal/conversation/loop.go` — the loop sees MCP tools like any other
+- `internal/api/` — no API changes
+- `internal/config/permissions.go` — glob matching already handles MCP tool name patterns
+- `internal/tui/model.go` — MCP tool calls render through existing stream handler
 
 ---
 
 ## How to verify
 
-1. **Streaming text** — send a prompt, verify text appears token-by-token with markdown formatting (bold, code, lists, headings).
+1. **stdio transport** — Create a test `.mcp.json` with a simple MCP server
+   (e.g. `npx -y @modelcontextprotocol/server-filesystem`). Verify the CLI
+   discovers its tools and can call them.
 
-2. **Code blocks** — verify syntax highlighting in fenced code blocks (Go, Python, JS at minimum).
+2. **SSE transport** — Start a local MCP server with HTTP SSE transport.
+   Verify tool discovery and execution work.
 
-3. **Tool execution** — trigger a Bash tool call, verify spinner appears during execution, summary line appears on completion.
+3. **Tool visibility** — Verify MCP tools appear in the tool definitions
+   sent to the API (check with `--dangerously-skip-permissions` and ask the
+   model "what tools do you have?").
 
-4. **Permission prompt** — trigger a tool requiring permission (Bash, FileEdit, FileWrite), verify styled prompt appears, y/n response works.
+4. **Sub-agent inheritance** — Trigger an Agent tool call and verify the
+   sub-agent can see and use MCP tools.
 
-5. **Diff display** — trigger a FileEdit, verify the old/new strings are shown as a colored diff.
+5. **Permission flow** — Verify MCP tool calls go through the permission
+   handler (should show permission prompt in TUI).
 
-6. **Todo list** — trigger a TodoWrite, verify the task list renders with status icons.
+6. **Permission rules** — Add a rule like `{"tool": "mcp__*", "action": "allow"}`
+   and verify it auto-approves MCP tools.
 
-7. **Multi-line input** — verify Shift+Enter or similar key combo creates a newline; Enter submits.
+7. **Server failure** — Start the CLI with a misconfigured MCP server.
+   Verify it warns and continues without crashing.
 
-8. **Slash commands** — verify all commands from the table above work, with tab completion for command names.
+8. **Graceful shutdown** — Verify MCP server subprocesses are cleaned up on
+   Ctrl+C.
 
-9. **Token tracking** — verify `/cost` shows cumulative input/output tokens.
+9. **Resource tools** — With a server that supports resources, verify
+   `ListMcpResources` and `ReadMcpResource` work.
 
-10. **Print mode** — verify `-p` flag still works without the TUI framework (plain text output).
+10. **/mcp command** — Verify the slash command shows connected servers and
+    their tool counts.
 
-11. **Ctrl+C** — verify clean exit during streaming, during tool execution, and at the input prompt.
-
-12. **Terminal resize** — verify the TUI handles terminal resize events gracefully.
-
-When in doubt about behavior, run the official `claude` CLI and observe how it handles each case.
+When in doubt about protocol details, inspect the official CLI's traffic
+with `mitmproxy` or add logging to the JSON-RPC exchange.
