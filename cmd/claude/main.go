@@ -135,6 +135,7 @@ func main() {
 		tokenProvider,
 		api.WithModel(model),
 		api.WithMaxTokens(*maxTokens),
+		api.WithVersion(version),
 	)
 
 	// Build system prompt with settings context and skill content.
@@ -351,14 +352,31 @@ func main() {
 }
 
 func doLogin(ctx context.Context, store *auth.CredentialStore) error {
-	flow := auth.NewOAuthFlow()
-	tokens, err := flow.Login(ctx)
+	flow, err := auth.NewOAuthFlow()
+	if err != nil {
+		return fmt.Errorf("initializing OAuth flow: %w", err)
+	}
+	result, err := flow.Login(ctx)
 	if err != nil {
 		return err
 	}
 
-	if err := store.Save(tokens); err != nil {
+	if err := store.Save(result.Tokens); err != nil {
 		return fmt.Errorf("saving tokens: %w", err)
+	}
+
+	// Issue 9: Store account metadata.
+	if result.Account != nil {
+		if err := store.SaveAccount(result.Account); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save account info: %v\n", err)
+		}
+	}
+
+	// Issue 8: Store API key.
+	if result.APIKey != "" {
+		if err := store.SaveAPIKey(result.APIKey); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save API key: %v\n", err)
+		}
 	}
 
 	fmt.Println("Login successful!")

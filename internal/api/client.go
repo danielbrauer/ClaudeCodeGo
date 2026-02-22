@@ -10,14 +10,22 @@ import (
 )
 
 const (
-	DefaultBaseURL      = "https://api.anthropic.com"
-	DefaultAPIVersion   = "2023-06-01"
-	DefaultMaxTokens    = 16384
+	DefaultBaseURL    = "https://api.anthropic.com"
+	DefaultAPIVersion = "2023-06-01"
+	DefaultMaxTokens  = 16384
 )
 
 // TokenSource provides access tokens for API authentication.
 type TokenSource interface {
 	GetAccessToken(ctx context.Context) (string, error)
+}
+
+// RefreshableTokenSource extends TokenSource with the ability to invalidate
+// cached tokens, forcing a re-fetch/refresh on the next call.
+// Issue 15: used for 401 auto-retry.
+type RefreshableTokenSource interface {
+	TokenSource
+	InvalidateToken()
 }
 
 // Client is the Claude Messages API client.
@@ -28,6 +36,7 @@ type Client struct {
 	tokenSource TokenSource
 	model       string
 	maxTokens   int
+	userAgent   string // Issue 14: User-Agent header
 }
 
 // ClientOption configures the client.
@@ -53,6 +62,12 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(c *Client) { c.httpClient = hc }
 }
 
+// WithVersion sets the CLI version for the User-Agent header.
+// Issue 14: No User-Agent header on API requests.
+func WithVersion(version string) ClientOption {
+	return func(c *Client) { c.userAgent = "claude-code/" + version }
+}
+
 // NewClient creates a new API client.
 func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 	c := &Client{
@@ -62,6 +77,7 @@ func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 		tokenSource: tokenSource,
 		model:       ModelClaude4Sonnet,
 		maxTokens:   DefaultMaxTokens,
+		userAgent:   "claude-code/dev",
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -95,32 +111,16 @@ func (c *Client) CreateMessageStream(
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
+	// Issue 15: 401 auto-retry loop. Attempts at most 2 requests.
+	resp, err := c.doAPIRequest(ctx, body)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	token, err := c.tokenSource.GetAccessToken(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("getting access token: %w", err)
-	}
-
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("anthropic-version", c.apiVersion)
-	httpReq.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	httpReq.Header.Set("x-app", "cli")
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	// Parse the SSE stream using an assembler that collects the final response.
@@ -130,6 +130,55 @@ func (c *Client) CreateMessageStream(
 	}
 
 	return assembler.Response(), nil
+}
+
+// doAPIRequest sends the API request with auth headers. On a 401 response,
+// it invalidates the token, refreshes, and retries once.
+// Issue 15: 401 auto-retry on API calls.
+func (c *Client) doAPIRequest(ctx context.Context, body []byte) (*http.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := c.tokenSource.GetAccessToken(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("getting access token: %w", err)
+		}
+
+		httpReq, err := http.NewRequestWithContext(
+			ctx, "POST", c.baseURL+"/v1/messages?beta=true", bytes.NewReader(body),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
+
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("anthropic-version", c.apiVersion)
+		httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+		httpReq.Header.Set("x-app", "cli")
+		// Issue 14: User-Agent header.
+		httpReq.Header.Set("User-Agent", c.userAgent)
+		// Issue 16: Accept header — use application/json, not text/event-stream.
+		// Streaming is controlled by the "stream" body parameter, not Accept.
+		httpReq.Header.Set("Accept", "application/json")
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("sending request: %w", err)
+		}
+
+		// Issue 15: On 401, invalidate token and retry once.
+		if resp.StatusCode == 401 && attempt == 0 {
+			resp.Body.Close()
+			if rts, ok := c.tokenSource.(RefreshableTokenSource); ok {
+				rts.InvalidateToken()
+				continue
+			}
+		}
+
+		return resp, nil
+	}
+
+	// Should not be reached, but handle gracefully.
+	return nil, fmt.Errorf("API request failed after retry")
 }
 
 // responseAssembler collects streaming events into a final MessageResponse.

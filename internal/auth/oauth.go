@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,22 +13,33 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 )
 
-// OAuth configuration constants (extracted from cli.js).
+// Default OAuth configuration constants (extracted from cli.js).
 const (
-	DefaultClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	DefaultBaseAPIURL  = "https://api.anthropic.com"
-	AuthorizeURL       = "https://claude.ai/oauth/authorize"
-	TokenURL           = "https://platform.claude.com/v1/oauth/token"
-	ManualRedirectURL  = "https://platform.claude.com/oauth/code/callback"
-	SuccessURL         = "https://platform.claude.com/oauth/code/success?app=claude-code"
-	OAuthVersion       = "oauth-2025-04-20"
+	DefaultClientID       = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	DefaultBaseAPIURL     = "https://api.anthropic.com"
+	DefaultAuthorizeURL   = "https://claude.ai/oauth/authorize"
+	DefaultTokenURL       = "https://platform.claude.com/v1/oauth/token"
+	DefaultManualRedirect = "https://platform.claude.com/oauth/code/callback"
+	DefaultSuccessURL     = "https://platform.claude.com/oauth/code/success?app=claude-code"
+	DefaultAPIKeyURL      = "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
+	DefaultRolesURL       = "https://api.anthropic.com/api/oauth/claude_cli/roles"
+	OAuthVersion          = "oauth-2025-04-20"
 )
+
+// approvedCustomOAuthURLs is the allowlist for CLAUDE_CODE_CUSTOM_OAUTH_URL.
+// Matches the JS version's approved endpoint list.
+var approvedCustomOAuthURLs = []string{
+	"https://beacon.claude-ai.staging.ant.dev",
+	"https://claude.fedstart.com",
+	"https://claude-staging.fedstart.com",
+}
 
 // Scopes requested during authentication.
 var DefaultScopes = []string{
@@ -38,13 +50,85 @@ var DefaultScopes = []string{
 	"org:create_api_key",
 }
 
+// OAuthURLConfig holds all OAuth-related URLs, supporting env var overrides.
+type OAuthURLConfig struct {
+	BaseAPIURL        string
+	AuthorizeURL      string
+	TokenURL          string
+	APIKeyURL         string
+	RolesURL          string
+	SuccessURL        string
+	ManualRedirectURL string
+	ClientID          string
+}
+
+// GetOAuthConfig builds the OAuth URL configuration from defaults and env var overrides.
+// Issue 17: CLAUDE_CODE_OAUTH_CLIENT_ID override.
+// Issue 18: CLAUDE_CODE_CUSTOM_OAUTH_URL override.
+func GetOAuthConfig() (*OAuthURLConfig, error) {
+	cfg := &OAuthURLConfig{
+		BaseAPIURL:        DefaultBaseAPIURL,
+		AuthorizeURL:      DefaultAuthorizeURL,
+		TokenURL:          DefaultTokenURL,
+		APIKeyURL:         DefaultAPIKeyURL,
+		RolesURL:          DefaultRolesURL,
+		SuccessURL:        DefaultSuccessURL,
+		ManualRedirectURL: DefaultManualRedirect,
+		ClientID:          DefaultClientID,
+	}
+
+	if customURL := os.Getenv("CLAUDE_CODE_CUSTOM_OAUTH_URL"); customURL != "" {
+		customURL = strings.TrimRight(customURL, "/")
+		if !isApprovedEndpoint(customURL) {
+			return nil, fmt.Errorf("CLAUDE_CODE_CUSTOM_OAUTH_URL is not an approved endpoint")
+		}
+		cfg.BaseAPIURL = customURL
+		cfg.AuthorizeURL = customURL + "/oauth/authorize"
+		cfg.TokenURL = customURL + "/v1/oauth/token"
+		cfg.APIKeyURL = customURL + "/api/oauth/claude_cli/create_api_key"
+		cfg.RolesURL = customURL + "/api/oauth/claude_cli/roles"
+		cfg.SuccessURL = customURL + "/oauth/code/success?app=claude-code"
+		cfg.ManualRedirectURL = customURL + "/oauth/code/callback"
+	}
+
+	if clientID := os.Getenv("CLAUDE_CODE_OAUTH_CLIENT_ID"); clientID != "" {
+		cfg.ClientID = clientID
+	}
+
+	return cfg, nil
+}
+
+func isApprovedEndpoint(url string) bool {
+	for _, approved := range approvedCustomOAuthURLs {
+		if url == approved {
+			return true
+		}
+	}
+	return false
+}
+
 // TokenResponse is the response from the token endpoint.
+// Issue 5: includes account and organization fields.
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int64  `json:"expires_in"`
 	Scope        string `json:"scope"`
 	TokenType    string `json:"token_type"`
+	Account      *struct {
+		UUID         string `json:"uuid"`
+		EmailAddress string `json:"email_address"`
+	} `json:"account,omitempty"`
+	Organization *struct {
+		UUID string `json:"uuid"`
+	} `json:"organization,omitempty"`
+}
+
+// LoginResult holds the full result of an OAuth login flow.
+type LoginResult struct {
+	Tokens  *OAuthTokens
+	Account *OAuthAccount
+	APIKey  string
 }
 
 // generateCodeVerifier creates a random PKCE code verifier.
@@ -63,8 +147,9 @@ func generateCodeChallenge(verifier string) string {
 }
 
 // generateState creates a random state parameter.
+// Issue 3: uses 32 random bytes (matching JS randomBytes(32)).
 func generateState() (string, error) {
-	b := make([]byte, 16)
+	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating state: %w", err)
 	}
@@ -73,20 +158,25 @@ func generateState() (string, error) {
 
 // OAuthFlow manages the browser-based OAuth login.
 type OAuthFlow struct {
-	ClientID string
+	config *OAuthURLConfig
 }
 
-// NewOAuthFlow creates a new OAuthFlow with default settings.
-func NewOAuthFlow() *OAuthFlow {
-	return &OAuthFlow{ClientID: DefaultClientID}
+// NewOAuthFlow creates a new OAuthFlow with configuration from defaults and env vars.
+func NewOAuthFlow() (*OAuthFlow, error) {
+	cfg, err := GetOAuthConfig()
+	if err != nil {
+		return nil, err
+	}
+	return &OAuthFlow{config: cfg}, nil
 }
 
 // Login performs the full OAuth PKCE flow:
 // 1. Start a local HTTP server for the callback
 // 2. Open the browser to the authorization URL
-// 3. Wait for the callback with the authorization code
+// 3. Wait for the callback with the authorization code (or manual entry)
 // 4. Exchange the code for tokens
-func (f *OAuthFlow) Login(ctx context.Context) (*OAuthTokens, error) {
+// 5. Fetch profile info, roles, and create API key
+func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 	verifier, err := generateCodeVerifier()
 	if err != nil {
 		return nil, err
@@ -127,7 +217,7 @@ func (f *OAuthFlow) Login(ctx context.Context) (*OAuthTokens, error) {
 			return
 		}
 		// Redirect browser to success page.
-		http.Redirect(w, r, SuccessURL, http.StatusFound)
+		http.Redirect(w, r, f.config.SuccessURL, http.StatusFound)
 		codeCh <- code
 	})
 
@@ -139,20 +229,38 @@ func (f *OAuthFlow) Login(ctx context.Context) (*OAuthTokens, error) {
 	}()
 	defer server.Shutdown(context.Background())
 
-	// Build authorization URL.
-	authURL := buildAuthURL(f.ClientID, challenge, state, port)
+	// Issue 4: Build both automatic and manual authorization URLs.
+	autoAuthURL := buildAuthURL(f.config, challenge, state, port, false)
+	manualAuthURL := buildAuthURL(f.config, challenge, state, port, true)
 
 	fmt.Println("Opening browser for authentication...")
-	fmt.Printf("If the browser doesn't open, visit:\n%s\n\n", authURL)
-
-	if err := openBrowser(authURL); err != nil {
+	if err := openBrowser(autoAuthURL); err != nil {
 		fmt.Printf("Could not open browser automatically: %v\n", err)
 	}
+	fmt.Printf("\nIf the browser doesn't open, visit:\n%s\n\n", autoAuthURL)
+	fmt.Printf("Or visit this URL on another device and paste the code below:\n%s\n\n", manualAuthURL)
 
-	// Wait for the callback.
+	// Start goroutine to read manual code entry from stdin.
+	manualCodeCh := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			text := strings.TrimSpace(scanner.Text())
+			if text != "" {
+				manualCodeCh <- text
+				return
+			}
+		}
+	}()
+
+	// Wait for the callback, manual code entry, or timeout.
 	var code string
+	isManual := false
 	select {
 	case code = <-codeCh:
+		// Browser callback succeeded.
+	case code = <-manualCodeCh:
+		isManual = true
 	case err := <-errCh:
 		return nil, err
 	case <-ctx.Done():
@@ -163,7 +271,10 @@ func (f *OAuthFlow) Login(ctx context.Context) (*OAuthTokens, error) {
 
 	// Exchange code for tokens.
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
-	tokenResp, err := exchangeCode(ctx, code, verifier, state, redirectURI, f.ClientID)
+	if isManual {
+		redirectURI = f.config.ManualRedirectURL
+	}
+	tokenResp, err := exchangeCode(ctx, code, verifier, state, redirectURI, f.config.ClientID, f.config.TokenURL)
 	if err != nil {
 		return nil, err
 	}
@@ -175,16 +286,68 @@ func (f *OAuthFlow) Login(ctx context.Context) (*OAuthTokens, error) {
 		Scopes:       strings.Split(tokenResp.Scope, " "),
 	}
 
-	return tokens, nil
+	// Issue 6: Fetch profile info to populate subscription data.
+	profileInfo, err := FetchProfileInfo(ctx, f.config.BaseAPIURL, tokenResp.AccessToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to fetch profile: %v\n", err)
+		profileInfo = &ProfileInfo{}
+	}
+
+	tokens.SubscriptionType = profileInfo.SubscriptionType
+	tokens.RateLimitTier = profileInfo.RateLimitTier
+
+	// Issue 5 & 9: Build account metadata from token response and profile.
+	var account *OAuthAccount
+	if tokenResp.Account != nil {
+		account = &OAuthAccount{
+			AccountUUID:          tokenResp.Account.UUID,
+			EmailAddress:         tokenResp.Account.EmailAddress,
+			DisplayName:          profileInfo.DisplayName,
+			HasExtraUsageEnabled: profileInfo.HasExtraUsageEnabled,
+			BillingType:          profileInfo.BillingType,
+		}
+		if tokenResp.Organization != nil {
+			account.OrganizationUUID = tokenResp.Organization.UUID
+		}
+	}
+
+	// Issue 7: Fetch and store roles.
+	if account != nil {
+		roles, err := FetchRoles(ctx, f.config.RolesURL, tokenResp.AccessToken)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch roles: %v\n", err)
+		} else {
+			account.OrganizationRole = roles.OrganizationRole
+			account.WorkspaceRole = roles.WorkspaceRole
+			account.OrganizationName = roles.OrganizationName
+		}
+	}
+
+	// Issue 8: Create and store API key.
+	apiKey, err := CreateAPIKey(ctx, f.config.APIKeyURL, tokenResp.AccessToken)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to create API key: %v\n", err)
+	}
+
+	return &LoginResult{
+		Tokens:  tokens,
+		Account: account,
+		APIKey:  apiKey,
+	}, nil
 }
 
-func buildAuthURL(clientID, challenge, state string, port int) string {
-	u, _ := url.Parse(AuthorizeURL)
+// Issue 4: buildAuthURL accepts isManual to switch between localhost and platform redirect.
+func buildAuthURL(cfg *OAuthURLConfig, challenge, state string, port int, isManual bool) string {
+	u, _ := url.Parse(cfg.AuthorizeURL)
 	q := u.Query()
 	q.Set("code", "true")
-	q.Set("client_id", clientID)
+	q.Set("client_id", cfg.ClientID)
 	q.Set("response_type", "code")
-	q.Set("redirect_uri", fmt.Sprintf("http://localhost:%d/callback", port))
+	if isManual {
+		q.Set("redirect_uri", cfg.ManualRedirectURL)
+	} else {
+		q.Set("redirect_uri", fmt.Sprintf("http://localhost:%d/callback", port))
+	}
 	q.Set("scope", strings.Join(DefaultScopes, " "))
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
@@ -193,7 +356,7 @@ func buildAuthURL(clientID, challenge, state string, port int) string {
 	return u.String()
 }
 
-func exchangeCode(ctx context.Context, code, verifier, state, redirectURI, clientID string) (*TokenResponse, error) {
+func exchangeCode(ctx context.Context, code, verifier, state, redirectURI, clientID, tokenURL string) (*TokenResponse, error) {
 	body := map[string]string{
 		"grant_type":    "authorization_code",
 		"code":          code,
@@ -204,7 +367,7 @@ func exchangeCode(ctx context.Context, code, verifier, state, redirectURI, clien
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(string(bodyJSON)))
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(string(bodyJSON)))
 	if err != nil {
 		return nil, fmt.Errorf("creating token request: %w", err)
 	}
@@ -237,7 +400,7 @@ func exchangeCode(ctx context.Context, code, verifier, state, redirectURI, clien
 }
 
 // RefreshAccessToken refreshes an OAuth access token using the refresh token.
-func RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*TokenResponse, error) {
+func RefreshAccessToken(ctx context.Context, refreshToken, clientID, tokenURL string) (*TokenResponse, error) {
 	body := map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
@@ -246,7 +409,7 @@ func RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*To
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenURL, strings.NewReader(string(bodyJSON)))
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(string(bodyJSON)))
 	if err != nil {
 		return nil, fmt.Errorf("creating refresh request: %w", err)
 	}
