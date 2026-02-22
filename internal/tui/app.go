@@ -9,6 +9,7 @@ import (
 
 	"github.com/anthropics/claude-code-go/internal/conversation"
 	"github.com/anthropics/claude-code-go/internal/session"
+	"github.com/anthropics/claude-code-go/internal/skills"
 )
 
 // MCPStatus provides MCP server information to the TUI without importing
@@ -26,7 +27,9 @@ type AppConfig struct {
 	Version    string
 	Model      string
 	PrintMode  bool
-	MCPManager MCPStatus // *mcp.Manager; nil if no MCP servers configured
+	MCPManager MCPStatus              // *mcp.Manager; nil if no MCP servers configured
+	Skills     []skills.Skill         // Phase 7: loaded skills for slash command registration
+	Hooks      conversation.HookRunner // Phase 7: hook runner for SessionStart, etc.
 }
 
 // App is the top-level TUI application. main.go creates it and calls Run.
@@ -58,6 +61,11 @@ func (a *App) Run(ctx context.Context) error {
 	// Create a cancellable context for the agentic loop.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 
+	// Phase 7: Fire SessionStart hook before UI starts.
+	if a.cfg.Hooks != nil {
+		_ = a.cfg.Hooks.RunSessionStart(loopCtx)
+	}
+
 	// Create the Bubble Tea model.
 	m := newModel(
 		a.cfg.Loop,
@@ -68,6 +76,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.initialPrompt,
 		width,
 		a.cfg.MCPManager,
+		a.cfg.Skills,
 	)
 
 	// Create the BT program (inline mode, no alt screen).

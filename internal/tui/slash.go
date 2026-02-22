@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/anthropics/claude-code-go/internal/skills"
 )
 
 // SlashCommand defines a slash command handler.
@@ -128,6 +130,33 @@ func (r *slashRegistry) complete(prefix string) []string {
 	}
 	return matches
 }
+
+// registerSkills adds slash commands for skills that have triggers.
+// Each skill slash command is flagged as a "skill command" so handleSubmit
+// can send the skill's content as a user message to the loop.
+func (r *slashRegistry) registerSkills(loadedSkills []skills.Skill) {
+	for _, s := range loadedSkills {
+		if s.Trigger == "" {
+			continue
+		}
+		name := strings.TrimPrefix(s.Trigger, "/")
+		skillContent := s.Content // capture for closure
+		r.register(SlashCommand{
+			Name:        name,
+			Description: s.Description,
+			Execute: func(m *model) string {
+				// Return the skill content as a sentinel — handleSubmit
+				// will detect this prefix and send it as a message.
+				return skillCommandPrefix + skillContent
+			},
+		})
+	}
+}
+
+// skillCommandPrefix is a sentinel prefix used to identify skill slash commands.
+// When a slash command's Execute returns a string starting with this prefix,
+// the remainder is sent as a user message to the agentic loop.
+const skillCommandPrefix = "\x00SKILL:"
 
 // helpText returns formatted help output.
 func (r *slashRegistry) helpText() string {
