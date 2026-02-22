@@ -17,6 +17,40 @@ var ModelAliases = map[string]string{
 	"haiku":  ModelClaude35Haiku,
 }
 
+// ModelOption describes a model available for selection.
+type ModelOption struct {
+	Alias       string // short name: "opus", "sonnet", "haiku"
+	ID          string // full model ID
+	DisplayName string // human-readable: "Opus 4", "Sonnet 4", "Haiku 3.5"
+	Description string // brief capability note
+}
+
+// AvailableModels is the ordered list of models shown in the /model picker.
+var AvailableModels = []ModelOption{
+	{Alias: "sonnet", ID: ModelClaude4Sonnet, DisplayName: "Sonnet 4", Description: "Best for everyday tasks (default)"},
+	{Alias: "opus", ID: ModelClaude4Opus, DisplayName: "Opus 4", Description: "Most capable for complex work"},
+	{Alias: "haiku", ID: ModelClaude35Haiku, DisplayName: "Haiku 3.5", Description: "Fastest for quick answers"},
+}
+
+// ModelDisplayName returns a friendly display name for a model ID or alias.
+func ModelDisplayName(model string) string {
+	for _, opt := range AvailableModels {
+		if model == opt.ID || model == opt.Alias {
+			return opt.DisplayName
+		}
+	}
+	return model
+}
+
+// ResolveModelAlias resolves a model alias to its full ID. If the input
+// is not a known alias, it is returned as-is (assumed to be a full model ID).
+func ResolveModelAlias(input string) string {
+	if resolved, ok := ModelAliases[input]; ok {
+		return resolved
+	}
+	return input
+}
+
 // Role constants for messages.
 const (
 	RoleUser      = "user"

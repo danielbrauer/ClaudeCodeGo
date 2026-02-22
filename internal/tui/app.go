@@ -21,15 +21,16 @@ type MCPStatus interface {
 
 // AppConfig bundles everything the TUI needs from main.go.
 type AppConfig struct {
-	Loop       *conversation.Loop
-	Session    *session.Session
-	SessStore  *session.Store
-	Version    string
-	Model      string
-	PrintMode  bool
-	MCPManager MCPStatus              // *mcp.Manager; nil if no MCP servers configured
-	Skills     []skills.Skill         // Phase 7: loaded skills for slash command registration
-	Hooks      conversation.HookRunner // Phase 7: hook runner for SessionStart, etc.
+	Loop          *conversation.Loop
+	Session       *session.Session
+	SessStore     *session.Store
+	Version       string
+	Model         string
+	PrintMode     bool
+	MCPManager    MCPStatus              // *mcp.Manager; nil if no MCP servers configured
+	Skills        []skills.Skill         // Phase 7: loaded skills for slash command registration
+	Hooks         conversation.HookRunner // Phase 7: hook runner for SessionStart, etc.
+	OnModelSwitch func(newModel string)   // called when user switches model via /model
 }
 
 // App is the top-level TUI application. main.go creates it and calls Run.
@@ -77,6 +78,7 @@ func (a *App) Run(ctx context.Context) error {
 		width,
 		a.cfg.MCPManager,
 		a.cfg.Skills,
+		a.cfg.OnModelSwitch,
 	)
 
 	// Create the BT program (inline mode, no alt screen).

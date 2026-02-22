@@ -90,6 +90,11 @@ func (c *Client) Model() string {
 	return c.model
 }
 
+// SetModel changes the model used for subsequent API calls.
+func (c *Client) SetModel(model string) {
+	c.model = model
+}
+
 // CreateMessageStream sends a streaming Messages API request and dispatches
 // events to the provided handler. It returns the final assembled response.
 func (c *Client) CreateMessageStream(

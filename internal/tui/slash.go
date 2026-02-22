@@ -37,10 +37,8 @@ func newSlashRegistry() *slashRegistry {
 
 	r.register(SlashCommand{
 		Name:        "model",
-		Description: "Show current model",
-		Execute: func(m *model) string {
-			return fmt.Sprintf("Current model: %s", m.modelName)
-		},
+		Description: "Show or switch model",
+		Execute:     nil, // handled specially in handleSubmit (needs interactive picker)
 	})
 
 	r.register(SlashCommand{

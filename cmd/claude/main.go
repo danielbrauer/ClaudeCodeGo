@@ -116,18 +116,10 @@ func main() {
 	// Resolve model: CLI flag > settings > default.
 	model := api.ModelClaude4Sonnet
 	if settings.Model != "" {
-		if resolved, ok := api.ModelAliases[settings.Model]; ok {
-			model = resolved
-		} else {
-			model = settings.Model
-		}
+		model = api.ResolveModelAlias(settings.Model)
 	}
 	if *modelFlag != "" {
-		if resolved, ok := api.ModelAliases[*modelFlag]; ok {
-			model = resolved
-		} else {
-			model = *modelFlag
-		}
+		model = api.ResolveModelAlias(*modelFlag)
 	}
 
 	// Create API client.
@@ -339,6 +331,11 @@ func main() {
 		MCPManager: mcpManager,
 		Skills:     loadedSkills,  // Phase 7
 		Hooks:      hookRunner,    // Phase 7
+		OnModelSwitch: func(newModel string) {
+			if currentSession != nil {
+				currentSession.Model = newModel
+			}
+		},
 	})
 
 	if initialPrompt != "" {
