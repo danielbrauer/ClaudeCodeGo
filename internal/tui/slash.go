@@ -88,6 +88,18 @@ func newSlashRegistry() *slashRegistry {
 	})
 
 	r.register(SlashCommand{
+		Name:        "memory",
+		Description: "Edit Claude memory files",
+		Execute:     nil, // handled specially in handleSubmit (needs tea.Exec)
+	})
+
+	r.register(SlashCommand{
+		Name:        "init",
+		Description: "Initialize a new CLAUDE.md file with codebase documentation",
+		Execute:     nil, // handled specially in handleSubmit (sends prompt to loop)
+	})
+
+	r.register(SlashCommand{
 		Name:        "compact",
 		Description: "Compact conversation history",
 		Execute:     nil, // handled specially in Update (needs async)
