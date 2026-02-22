@@ -63,6 +63,23 @@ func (l *Loop) History() *History {
 	return l.history
 }
 
+// SetHandler replaces the stream handler. This allows the TUI to inject
+// its own handler after the loop is created.
+func (l *Loop) SetHandler(h api.StreamHandler) {
+	l.handler = h
+}
+
+// SetPermissionHandler replaces the permission handler on the tool executor.
+// This is a no-op if the executor doesn't support it.
+func (l *Loop) SetPermissionHandler(h interface{}) {
+	type permSetter interface {
+		SetPermissionHandler(h interface{})
+	}
+	if ps, ok := l.toolExec.(permSetter); ok {
+		ps.SetPermissionHandler(h)
+	}
+}
+
 // SendMessage sends a user message and runs the agentic loop until the
 // assistant produces a final text response (stop_reason = "end_turn").
 func (l *Loop) SendMessage(ctx context.Context, userMessage string) error {

@@ -102,6 +102,17 @@ func (r *Registry) Execute(ctx context.Context, name string, input []byte) (stri
 	return result, nil
 }
 
+// SetPermissionHandler replaces the permission handler at runtime.
+// The argument is interface{} to avoid import cycles with the tui package;
+// it must implement PermissionHandler.
+func (r *Registry) SetPermissionHandler(h interface{}) {
+	if ph, ok := h.(PermissionHandler); ok {
+		r.mu.Lock()
+		r.permission = ph
+		r.mu.Unlock()
+	}
+}
+
 // Definitions returns API tool definitions for all registered tools,
 // in registration order.
 func (r *Registry) Definitions() []api.ToolDefinition {
