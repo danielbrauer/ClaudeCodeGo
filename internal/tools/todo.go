@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TodoItem represents a single task in the todo list.
@@ -14,6 +16,12 @@ type TodoItem struct {
 	ActiveForm string `json:"activeForm"`
 }
 
+// TodoUpdateMsg is sent to the BT program when the task list changes.
+// This type is defined here to avoid import cycles (tui imports tools).
+type TodoUpdateMsg struct {
+	Todos []TodoItem
+}
+
 // TodoWriteInput is the input schema for the TodoWrite tool.
 type TodoWriteInput struct {
 	Todos []TodoItem `json:"todos"`
@@ -21,13 +29,26 @@ type TodoWriteInput struct {
 
 // TodoWriteTool manages a structured task list.
 type TodoWriteTool struct {
-	mu    sync.Mutex
-	todos []TodoItem
+	mu      sync.Mutex
+	todos   []TodoItem
+	program *tea.Program // nil in print mode
 }
 
-// NewTodoWriteTool creates a new TodoWrite tool.
+// NewTodoWriteTool creates a new TodoWrite tool (print mode fallback).
 func NewTodoWriteTool() *TodoWriteTool {
 	return &TodoWriteTool{}
+}
+
+// NewTodoWriteToolWithProgram creates a TodoWrite tool wired to a BT program.
+func NewTodoWriteToolWithProgram(p *tea.Program) *TodoWriteTool {
+	return &TodoWriteTool{program: p}
+}
+
+// SetProgram sets the BT program after construction (for late wiring).
+func (t *TodoWriteTool) SetProgram(p *tea.Program) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.program = p
 }
 
 func (t *TodoWriteTool) Name() string { return "TodoWrite" }
@@ -84,25 +105,31 @@ func (t *TodoWriteTool) Execute(_ context.Context, input json.RawMessage) (strin
 	copy(oldTodos, t.todos)
 	t.todos = make([]TodoItem, len(in.Todos))
 	copy(t.todos, in.Todos)
+	prog := t.program
 	t.mu.Unlock()
 
-	// Print formatted task list to terminal.
-	fmt.Println()
-	for _, item := range in.Todos {
-		var icon string
-		switch item.Status {
-		case "pending":
-			icon = "[ ]"
-		case "in_progress":
-			icon = "[~]"
-		case "completed":
-			icon = "[x]"
-		default:
-			icon = "[ ]"
+	if prog != nil {
+		// TUI mode: send update to the BT event loop.
+		prog.Send(TodoUpdateMsg{Todos: in.Todos})
+	} else {
+		// Print mode fallback.
+		fmt.Println()
+		for _, item := range in.Todos {
+			var icon string
+			switch item.Status {
+			case "pending":
+				icon = "[ ]"
+			case "in_progress":
+				icon = "[~]"
+			case "completed":
+				icon = "[x]"
+			default:
+				icon = "[ ]"
+			}
+			fmt.Printf("  %s %s\n", icon, item.Content)
 		}
-		fmt.Printf("  %s %s\n", icon, item.Content)
+		fmt.Println()
 	}
-	fmt.Println()
 
 	result := map[string]interface{}{
 		"oldTodos": oldTodos,

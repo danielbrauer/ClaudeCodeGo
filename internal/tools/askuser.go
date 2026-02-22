@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // AskUserOption represents a single choice in a question.
@@ -29,16 +31,37 @@ type AskUserInput struct {
 	Questions []AskUserQuestionItem `json:"questions"`
 }
 
-// AskUserTool presents structured questions with options to the user.
-type AskUserTool struct {
-	reader *bufio.Reader
+// AskUserRequestMsg is sent to the BT program when user input is needed.
+// This type is defined here to avoid import cycles (tui imports tools).
+type AskUserRequestMsg struct {
+	Questions  []AskUserQuestionItem
+	ResponseCh chan map[string]string
 }
 
-// NewAskUserTool creates a new AskUserQuestion tool.
+// AskUserTool presents structured questions with options to the user.
+type AskUserTool struct {
+	reader  *bufio.Reader
+	program *tea.Program // nil in print mode
+}
+
+// NewAskUserTool creates a new AskUserQuestion tool (print mode fallback).
 func NewAskUserTool() *AskUserTool {
 	return &AskUserTool{
 		reader: bufio.NewReader(os.Stdin),
 	}
+}
+
+// NewAskUserToolWithProgram creates an AskUser tool wired to a BT program.
+func NewAskUserToolWithProgram(p *tea.Program) *AskUserTool {
+	return &AskUserTool{
+		reader:  bufio.NewReader(os.Stdin),
+		program: p,
+	}
+}
+
+// SetProgram sets the BT program after construction (for late wiring).
+func (t *AskUserTool) SetProgram(p *tea.Program) {
+	t.program = p
 }
 
 func (t *AskUserTool) Name() string { return "AskUserQuestion" }
@@ -118,6 +141,33 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (strin
 		return "Error: at least one question is required", nil
 	}
 
+	// TUI mode: delegate to the BT event loop via channel handshake.
+	if t.program != nil {
+		responseCh := make(chan map[string]string, 1)
+		t.program.Send(AskUserRequestMsg{
+			Questions:  in.Questions,
+			ResponseCh: responseCh,
+		})
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case answers := <-responseCh:
+			result := map[string]interface{}{
+				"questions": in.Questions,
+				"answers":   answers,
+			}
+			out, _ := json.Marshal(result)
+			return string(out), nil
+		}
+	}
+
+	// Print mode fallback: use terminal stdin.
+	return t.executeTerminal(ctx, in)
+}
+
+// executeTerminal handles AskUser in non-TUI mode using fmt/bufio.
+func (t *AskUserTool) executeTerminal(ctx context.Context, in AskUserInput) (string, error) {
 	answers := make(map[string]string)
 
 	for _, q := range in.Questions {
