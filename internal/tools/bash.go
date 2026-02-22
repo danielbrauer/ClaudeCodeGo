@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -25,11 +26,17 @@ type BashInput struct {
 // BashTool executes shell commands.
 type BashTool struct {
 	workDir string
+	env     map[string]string // additional environment variables from settings
 }
 
 // NewBashTool creates a Bash tool that runs commands in the given directory.
 func NewBashTool(workDir string) *BashTool {
 	return &BashTool{workDir: workDir}
+}
+
+// NewBashToolWithEnv creates a Bash tool with additional environment variables.
+func NewBashToolWithEnv(workDir string, env map[string]string) *BashTool {
+	return &BashTool{workDir: workDir, env: env}
 }
 
 func (t *BashTool) Name() string { return "Bash" }
@@ -91,6 +98,14 @@ func (t *BashTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 
 	cmd := exec.CommandContext(cmdCtx, "bash", "-c", in.Command)
 	cmd.Dir = t.workDir
+
+	// Apply environment variables from settings.
+	if len(t.env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range t.env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
