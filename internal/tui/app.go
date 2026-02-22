@@ -77,6 +77,8 @@ func (a *App) Run(ctx context.Context) error {
 		width,
 		a.cfg.MCPManager,
 		a.cfg.Skills,
+		a.cfg.SessStore,
+		a.cfg.Session,
 	)
 
 	// Create the BT program (inline mode, no alt screen).
