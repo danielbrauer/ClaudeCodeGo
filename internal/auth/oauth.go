@@ -269,28 +269,28 @@ func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 		return nil, fmt.Errorf("login timed out waiting for browser callback")
 	}
 
-	// Exchange code for tokens.
-	// When the code was entered manually, the user may have used either the
-	// manual URL (redirect to platform.claude.com) or the auto URL (redirect
-	// to localhost) opened on another device. Try both redirect_uris.
-	autoRedirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
-	var tokenResp *TokenResponse
+	// The manual code page shows the code in the format "authorizationCode#state".
+	// Split on "#" to extract just the authorization code.
 	if isManual {
-		tokenResp, err = exchangeCode(ctx, code, verifier, state, f.config.ManualRedirectURL, f.config.ClientID, f.config.TokenURL)
-		if err != nil {
-			// The user may have opened the auto URL on another device and
-			// pasted the code from the failed localhost redirect. Retry with
-			// the auto redirect_uri.
-			tokenResp, err = exchangeCode(ctx, code, verifier, state, autoRedirectURI, f.config.ClientID, f.config.TokenURL)
-			if err != nil {
-				return nil, err
-			}
+		parts := strings.SplitN(code, "#", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid code format: expected code#state — make sure the full code was copied")
 		}
-	} else {
-		tokenResp, err = exchangeCode(ctx, code, verifier, state, autoRedirectURI, f.config.ClientID, f.config.TokenURL)
-		if err != nil {
-			return nil, err
+		code = parts[0]
+		// Validate the state from the pasted code matches what we generated.
+		if parts[1] != state {
+			return nil, fmt.Errorf("state mismatch in manual code entry")
 		}
+	}
+
+	// Exchange code for tokens.
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
+	if isManual {
+		redirectURI = f.config.ManualRedirectURL
+	}
+	tokenResp, err := exchangeCode(ctx, code, verifier, state, redirectURI, f.config.ClientID, f.config.TokenURL)
+	if err != nil {
+		return nil, err
 	}
 
 	tokens := &OAuthTokens{
