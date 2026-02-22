@@ -10,6 +10,7 @@ import (
 
 	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/conversation"
+	"github.com/anthropics/claude-code-go/internal/skills"
 	"github.com/anthropics/claude-code-go/internal/tools"
 )
 
@@ -79,11 +80,17 @@ func newModel(
 	initialPrompt string,
 	width int,
 	mcpStatus MCPStatus,
+	loadedSkills []skills.Skill,
 ) model {
 	ti := newTextInput(width)
 	sp := newSpinner()
 	md := newMarkdownRenderer(width)
 	slash := newSlashRegistry()
+
+	// Phase 7: Register skill-based slash commands.
+	if len(loadedSkills) > 0 {
+		slash.registerSkills(loadedSkills)
+	}
 
 	return model{
 		loop:          loop,
@@ -319,6 +326,19 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 		if cmd, ok := m.slashReg.lookup(cmdName); ok && cmd.Execute != nil {
 			output := cmd.Execute(&m)
+			// Phase 7: Skill slash commands return a sentinel prefix.
+			// When detected, send the skill content as a user message.
+			if strings.HasPrefix(output, skillCommandPrefix) {
+				skillContent := strings.TrimPrefix(output, skillCommandPrefix)
+				m.mode = modeStreaming
+				m.textInput.Blur()
+				loopCmd := func() tea.Msg {
+					err := m.loop.SendMessage(m.ctx, skillContent)
+					return LoopDoneMsg{Err: err}
+				}
+				cmds = append(cmds, loopCmd, m.spinner.Tick)
+				return m, tea.Batch(cmds...)
+			}
 			cmds = append(cmds, tea.Println(output))
 			return m, tea.Batch(cmds...)
 		}

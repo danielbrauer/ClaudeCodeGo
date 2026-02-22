@@ -16,6 +16,23 @@ type ToolExecutor interface {
 	HasTool(name string) bool
 }
 
+// HookRunner fires lifecycle hooks at various points in the agentic loop.
+// A nil HookRunner means no hooks are configured.
+type HookRunner interface {
+	RunPreToolUse(ctx context.Context, toolName string, input json.RawMessage) error
+	RunPostToolUse(ctx context.Context, toolName string, input json.RawMessage, output string, isError bool) error
+	RunUserPromptSubmit(ctx context.Context, message string) (HookSubmitResult, error)
+	RunSessionStart(ctx context.Context) error
+	RunStop(ctx context.Context) error
+	RunPermissionRequest(ctx context.Context, toolName string, input json.RawMessage) error
+}
+
+// HookSubmitResult is the outcome of a UserPromptSubmit hook.
+type HookSubmitResult struct {
+	Block   bool   // true = reject the message
+	Message string // possibly modified message
+}
+
 // Loop is the main agentic conversation loop.
 type Loop struct {
 	client         *api.Client
@@ -26,6 +43,7 @@ type Loop struct {
 	handler        api.StreamHandler
 	compactor      *Compactor
 	onTurnComplete func(history *History)
+	hooks          HookRunner // Phase 7: nil = no hooks
 }
 
 // LoopConfig configures the agentic loop.
@@ -35,9 +53,10 @@ type LoopConfig struct {
 	Tools          []api.ToolDefinition
 	ToolExec       ToolExecutor
 	Handler        api.StreamHandler
-	History        *History             // if non-nil, resume from this history
-	Compactor      *Compactor           // if non-nil, enables auto-compaction
-	OnTurnComplete func(history *History) // called after each API round-trip
+	History        *History               // if non-nil, resume from this history
+	Compactor      *Compactor             // if non-nil, enables auto-compaction
+	OnTurnComplete func(history *History)  // called after each API round-trip
+	Hooks          HookRunner             // Phase 7: nil = no hooks
 }
 
 // NewLoop creates a new agentic conversation loop.
@@ -55,6 +74,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		handler:        cfg.Handler,
 		compactor:      cfg.Compactor,
 		onTurnComplete: cfg.OnTurnComplete,
+		hooks:          cfg.Hooks,
 	}
 }
 
@@ -83,6 +103,17 @@ func (l *Loop) SetPermissionHandler(h interface{}) {
 // SendMessage sends a user message and runs the agentic loop until the
 // assistant produces a final text response (stop_reason = "end_turn").
 func (l *Loop) SendMessage(ctx context.Context, userMessage string) error {
+	// Phase 7: UserPromptSubmit hook.
+	if l.hooks != nil {
+		result, err := l.hooks.RunUserPromptSubmit(ctx, userMessage)
+		if err != nil {
+			return fmt.Errorf("UserPromptSubmit hook: %w", err)
+		}
+		if result.Block {
+			return nil // hook rejected the message
+		}
+		userMessage = result.Message // hook may modify the message
+	}
 	l.history.AddUserMessage(userMessage)
 	return l.run(ctx)
 }
@@ -125,6 +156,10 @@ func (l *Loop) run(ctx context.Context) error {
 
 		// Check if we need to execute tools.
 		if resp.StopReason != api.StopReasonToolUse {
+			// Phase 7: Stop hook.
+			if l.hooks != nil {
+				_ = l.hooks.RunStop(ctx)
+			}
 			// No tool calls - conversation turn is done.
 			l.notifyTurnComplete()
 			return nil
@@ -144,7 +179,23 @@ func (l *Loop) run(ctx context.Context) error {
 				continue
 			}
 
+			// Phase 7: PreToolUse hook.
+			if l.hooks != nil {
+				if err := l.hooks.RunPreToolUse(ctx, block.Name, block.Input); err != nil {
+					result := MakeToolResult(block.ID,
+						fmt.Sprintf("Hook blocked tool execution: %v", err), true)
+					toolResults = append(toolResults, result)
+					continue
+				}
+			}
+
 			output, execErr := l.toolExec.Execute(ctx, block.Name, block.Input)
+
+			// Phase 7: PostToolUse hook.
+			if l.hooks != nil {
+				_ = l.hooks.RunPostToolUse(ctx, block.Name, block.Input, output, execErr != nil)
+			}
+
 			if execErr != nil {
 				// If tool returned output along with an error, use the output.
 				msg := output

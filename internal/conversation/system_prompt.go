@@ -12,8 +12,8 @@ import (
 )
 
 // BuildSystemPrompt assembles the system prompt blocks from CLAUDE.md files,
-// environment context, and settings.
-func BuildSystemPrompt(cwd string, settings *config.Settings) []api.SystemBlock {
+// environment context, settings, and active skill content.
+func BuildSystemPrompt(cwd string, settings *config.Settings, skillContent string) []api.SystemBlock {
 	var parts []string
 
 	// Core identity.
@@ -30,6 +30,11 @@ func BuildSystemPrompt(cwd string, settings *config.Settings) []api.SystemBlock 
 	claudeMDContent := config.LoadClaudeMD(cwd)
 	if claudeMDContent != "" {
 		parts = append(parts, "\n# Project Instructions (CLAUDE.md)\n\n"+claudeMDContent)
+	}
+
+	// Phase 7: Inject skill instructions.
+	if skillContent != "" {
+		parts = append(parts, "\n# Active Skills\n\n"+skillContent)
 	}
 
 	// Inject permission rule summary if any rules are configured.

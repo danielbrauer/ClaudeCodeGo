@@ -42,6 +42,7 @@ type AgentTool struct {
 	tools    []api.ToolDefinition
 	toolExec conversation.ToolExecutor
 	bgStore  *BackgroundTaskStore
+	hooks    conversation.HookRunner // Phase 7: propagated to sub-agents
 
 	mu     sync.Mutex
 	agents map[string]*agentState
@@ -55,6 +56,7 @@ func NewAgentTool(
 	toolDefs []api.ToolDefinition,
 	toolExec conversation.ToolExecutor,
 	bgStore *BackgroundTaskStore,
+	hooks conversation.HookRunner,
 ) *AgentTool {
 	return &AgentTool{
 		client:   client,
@@ -62,6 +64,7 @@ func NewAgentTool(
 		tools:    toolDefs,
 		toolExec: toolExec,
 		bgStore:  bgStore,
+		hooks:    hooks,
 		agents:   make(map[string]*agentState),
 	}
 }
@@ -146,6 +149,7 @@ func (t *AgentTool) Execute(ctx context.Context, input json.RawMessage) (string,
 		ToolExec: t.toolExec,
 		Handler:  handler,
 		History:  history,
+		Hooks:    t.hooks, // Phase 7: propagate hooks to sub-agents
 	}
 	agentLoop := conversation.NewLoop(loopCfg)
 

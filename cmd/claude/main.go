@@ -3,18 +3,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/auth"
 	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/conversation"
+	"github.com/anthropics/claude-code-go/internal/hooks"
 	"github.com/anthropics/claude-code-go/internal/mcp"
 	"github.com/anthropics/claude-code-go/internal/session"
+	"github.com/anthropics/claude-code-go/internal/skills"
 	"github.com/anthropics/claude-code-go/internal/tools"
 	"github.com/anthropics/claude-code-go/internal/tui"
 )
@@ -33,6 +39,7 @@ func main() {
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	loginFlag := flag.Bool("login", false, "Log in with OAuth")
 	dangerousNoPermissions := flag.Bool("dangerously-skip-permissions", false, "Skip all permission prompts (use with caution)")
+	outputFormat := flag.String("output-format", "text", "Output format: text, json, stream-json")
 	flag.Parse()
 
 	if *versionFlag {
@@ -93,6 +100,19 @@ func main() {
 		settings = &config.Settings{}
 	}
 
+	// Phase 7: Parse hook config from settings.
+	var hookConfig hooks.HookConfig
+	if settings.Hooks != nil {
+		if err := json.Unmarshal(settings.Hooks, &hookConfig); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: invalid hooks config: %v\n", err)
+		}
+	}
+	hookRunner := hooks.NewRunner(hookConfig)
+
+	// Phase 7: Load skills.
+	loadedSkills := skills.LoadSkills(cwd)
+	skillContent := skills.ActiveSkillContent(loadedSkills)
+
 	// Resolve model: CLI flag > settings > default.
 	model := api.ModelClaude4Sonnet
 	if settings.Model != "" {
@@ -117,8 +137,8 @@ func main() {
 		api.WithMaxTokens(*maxTokens),
 	)
 
-	// Build system prompt with settings context.
-	system := conversation.BuildSystemPrompt(cwd, settings)
+	// Build system prompt with settings context and skill content.
+	system := conversation.BuildSystemPrompt(cwd, settings, skillContent)
 
 	// Set up permission handler with rule-based evaluation.
 	var permHandler tools.PermissionHandler
@@ -190,7 +210,8 @@ func main() {
 	}
 
 	// Agent tool registered last — gets tool definitions that include everything above.
-	agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore)
+	// Phase 7: Pass hookRunner so sub-agents inherit hooks.
+	agentTool := tools.NewAgentTool(client, system, registry.Definitions(), registry, bgStore, hookRunner)
 	registry.Register(agentTool)
 
 	// Session management.
@@ -249,6 +270,7 @@ func main() {
 		Handler:   handler,
 		History:   history,
 		Compactor: compactor,
+		Hooks:     hookRunner, // Phase 7: wire hooks into the loop
 		OnTurnComplete: func(h *conversation.History) {
 			// Save session after each turn.
 			if sessionStore != nil && currentSession != nil {
@@ -267,10 +289,37 @@ func main() {
 		initialPrompt = strings.Join(args, " ")
 	}
 
+	// Phase 7: Pipe/stdin support — if stdin is not a terminal, read prompt from stdin.
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		data, err := io.ReadAll(os.Stdin)
+		if err == nil && len(data) > 0 {
+			pipeInput := strings.TrimSpace(string(data))
+			if initialPrompt != "" {
+				// Combine: CLI prompt + piped content.
+				initialPrompt = initialPrompt + "\n\n" + pipeInput
+			} else {
+				initialPrompt = pipeInput
+			}
+			*printMode = true // force print mode when piped
+		}
+	}
+
 	// Print mode: use simple handler, no TUI.
 	if *printMode {
 		if initialPrompt != "" {
-			loop.SetHandler(&conversation.PrintStreamHandler{})
+			// Phase 7: Select handler based on --output-format.
+			switch *outputFormat {
+			case "json":
+				loop.SetHandler(conversation.NewJSONStreamHandler(os.Stdout))
+			case "stream-json":
+				loop.SetHandler(conversation.NewStreamJSONStreamHandler(os.Stdout))
+			default:
+				loop.SetHandler(&conversation.PrintStreamHandler{})
+			}
+
+			// Fire SessionStart hook in print mode.
+			_ = hookRunner.RunSessionStart(ctx)
+
 			if err := loop.SendMessage(ctx, initialPrompt); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -287,6 +336,8 @@ func main() {
 		Version:    version,
 		Model:      model,
 		MCPManager: mcpManager,
+		Skills:     loadedSkills,  // Phase 7
+		Hooks:      hookRunner,    // Phase 7
 	})
 
 	if initialPrompt != "" {
