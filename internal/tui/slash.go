@@ -146,6 +146,18 @@ func newSlashRegistry() *slashRegistry {
 	})
 
 	r.register(SlashCommand{
+		Name:        "diff",
+		Description: "View uncommitted changes",
+		Execute:     nil, // handled specially in handleSubmit (needs async git)
+	})
+
+	r.register(SlashCommand{
+		Name:        "review",
+		Description: "Review a pull request",
+		Execute:     nil, // handled specially in handleSubmit (sends prompt to loop)
+	})
+
+	r.register(SlashCommand{
 		Name:        "quit",
 		Description: "Exit the program",
 		Execute:     nil, // handled specially in Update
