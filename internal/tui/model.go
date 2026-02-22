@@ -294,6 +294,16 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// isExitCommand returns true if the input is a bare exit command.
+// The JS CLI recognizes these without a slash prefix.
+func isExitCommand(text string) bool {
+	switch text {
+	case "exit", "quit", ":q", ":q!", ":wq", ":wq!":
+		return true
+	}
+	return false
+}
+
 // handleSubmit processes submitted text (user message or slash command).
 func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -301,6 +311,12 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	// Echo user input to scrollback.
 	userLine := userLabelStyle.Render("> ") + text
 	cmds = append(cmds, tea.Println(userLine))
+
+	// Check for bare exit commands (exit, quit, :q, :q!, :wq, :wq!).
+	if isExitCommand(text) {
+		m.quitting = true
+		return m, tea.Batch(append(cmds, tea.Quit)...)
+	}
 
 	// Check for slash commands.
 	if strings.HasPrefix(text, "/") {
