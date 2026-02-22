@@ -75,7 +75,7 @@ func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 		apiVersion:  DefaultAPIVersion,
 		httpClient:  http.DefaultClient,
 		tokenSource: tokenSource,
-		model:       ModelClaude4Sonnet,
+		model:       ModelClaude46Sonnet,
 		maxTokens:   DefaultMaxTokens,
 		userAgent:   "claude-code/dev",
 	}
