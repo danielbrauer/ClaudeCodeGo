@@ -31,7 +31,7 @@ var (
 
 func main() {
 	// Check for subcommands before flag parsing.
-	// The JS CLI uses Commander.js subcommands: `claude login`, `claude logout`.
+	// The JS CLI uses Commander.js subcommands: `claude login`, `claude logout`, `claude status`.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "login":
@@ -41,6 +41,9 @@ func main() {
 			runLogout()
 			return
 		}
+	}
+	if handleSubcommand() {
+		return
 	}
 
 	// CLI flags.
@@ -369,6 +372,63 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
 			os.Exit(1)
 		}
+	}
+}
+
+// handleSubcommand checks for subcommands ("status", "auth status") before
+// flag parsing. Returns true if a subcommand was handled.
+func handleSubcommand() bool {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		return false
+	}
+
+	// Match "claude status [flags]" or "claude auth status [flags]".
+	var subcmdArgs []string
+	switch {
+	case args[0] == "status":
+		subcmdArgs = args[1:]
+	case args[0] == "auth" && len(args) > 1 && args[1] == "status":
+		subcmdArgs = args[2:]
+	default:
+		return false
+	}
+
+	runStatus(subcmdArgs)
+	return true
+}
+
+// runStatus executes the status subcommand. Output is JSON by default (matching
+// the JS version); use --text for human-readable output.
+func runStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	jsonFlag := fs.Bool("json", false, "Output as JSON (default)")
+	textFlag := fs.Bool("text", false, "Output as human-readable text")
+	fs.Parse(args)
+
+	store, err := auth.NewCredentialStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	status := auth.GetAuthStatus(store)
+
+	if *textFlag {
+		fmt.Println(auth.FormatStatusText(status))
+	} else {
+		// JSON is the default (--json flag is accepted but optional).
+		_ = jsonFlag
+		output, err := auth.FormatStatusJSON(status)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(output)
+	}
+
+	if !status.LoggedIn {
+		os.Exit(1)
 	}
 }
 
