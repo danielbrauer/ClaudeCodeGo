@@ -237,7 +237,7 @@ func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 	if err := openBrowser(autoAuthURL); err != nil {
 		fmt.Printf("Could not open browser automatically: %v\n", err)
 	}
-	fmt.Printf("\nIf the browser doesn't open, visit:\n%s\n\n", autoAuthURL)
+	fmt.Printf("\nIf the browser doesn't open, visit this URL on this machine:\n%s\n\n", autoAuthURL)
 	fmt.Printf("Or visit this URL on another device and paste the code below:\n%s\n\n", manualAuthURL)
 
 	// Start goroutine to read manual code entry from stdin.
@@ -270,13 +270,27 @@ func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 	}
 
 	// Exchange code for tokens.
-	redirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
+	// When the code was entered manually, the user may have used either the
+	// manual URL (redirect to platform.claude.com) or the auto URL (redirect
+	// to localhost) opened on another device. Try both redirect_uris.
+	autoRedirectURI := fmt.Sprintf("http://localhost:%d/callback", port)
+	var tokenResp *TokenResponse
 	if isManual {
-		redirectURI = f.config.ManualRedirectURL
-	}
-	tokenResp, err := exchangeCode(ctx, code, verifier, state, redirectURI, f.config.ClientID, f.config.TokenURL)
-	if err != nil {
-		return nil, err
+		tokenResp, err = exchangeCode(ctx, code, verifier, state, f.config.ManualRedirectURL, f.config.ClientID, f.config.TokenURL)
+		if err != nil {
+			// The user may have opened the auto URL on another device and
+			// pasted the code from the failed localhost redirect. Retry with
+			// the auto redirect_uri.
+			tokenResp, err = exchangeCode(ctx, code, verifier, state, autoRedirectURI, f.config.ClientID, f.config.TokenURL)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		tokenResp, err = exchangeCode(ctx, code, verifier, state, autoRedirectURI, f.config.ClientID, f.config.TokenURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	tokens := &OAuthTokens{
