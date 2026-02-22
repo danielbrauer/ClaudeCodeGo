@@ -64,11 +64,17 @@ type model struct {
 	// Todo list.
 	todos []tools.TodoItem
 
+	// Auth callbacks.
+	logoutFunc func() error // Clears credentials; nil if not available.
+
 	// Initial prompt to send on start.
 	initialPrompt string
 
 	// Whether we should quit.
 	quitting bool
+
+	// Exit action to signal the caller (e.g., re-run login after TUI exits).
+	exitAction ExitAction
 }
 
 // newModel creates the initial Bubble Tea model.
@@ -81,6 +87,7 @@ func newModel(
 	width int,
 	mcpStatus MCPStatus,
 	loadedSkills []skills.Skill,
+	logoutFunc func() error,
 ) model {
 	ti := newTextInput(width)
 	sp := newSpinner()
@@ -106,6 +113,7 @@ func newModel(
 		spinner:       sp,
 		mdRenderer:    md,
 		slashReg:      slash,
+		logoutFunc:    logoutFunc,
 		initialPrompt: initialPrompt,
 	}
 }
@@ -327,6 +335,25 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		if cmdName == "quit" || cmdName == "exit" {
 			m.quitting = true
 			return m, tea.Quit
+		}
+
+		if cmdName == "login" {
+			cmds = append(cmds, tea.Println("Exiting session for re-authentication..."))
+			m.exitAction = ExitLogin
+			m.quitting = true
+			return m, tea.Batch(append(cmds, tea.Quit)...)
+		}
+
+		if cmdName == "logout" {
+			if m.logoutFunc != nil {
+				if err := m.logoutFunc(); err != nil {
+					cmds = append(cmds, tea.Println(errorStyle.Render("Failed to log out.")))
+					return m, tea.Batch(cmds...)
+				}
+			}
+			cmds = append(cmds, tea.Println("Successfully logged out from your Anthropic account."))
+			m.quitting = true
+			return m, tea.Batch(append(cmds, tea.Quit)...)
 		}
 
 		if cmdName == "compact" {

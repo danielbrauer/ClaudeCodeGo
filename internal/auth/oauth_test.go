@@ -59,7 +59,7 @@ func TestBuildAuthURL_AutoUsesLocalhost(t *testing.T) {
 		ClientID:          "test-client-id",
 		ManualRedirectURL: "https://platform.claude.com/oauth/code/callback",
 	}
-	rawURL := buildAuthURL(cfg, "challenge", "state", 12345, false)
+	rawURL := buildAuthURL(cfg, "challenge", "state", 12345, false, LoginOptions{})
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		t.Fatalf("invalid URL: %v", err)
@@ -76,7 +76,7 @@ func TestBuildAuthURL_ManualUsesPlatformRedirect(t *testing.T) {
 		ClientID:          "test-client-id",
 		ManualRedirectURL: "https://platform.claude.com/oauth/code/callback",
 	}
-	rawURL := buildAuthURL(cfg, "challenge", "state", 12345, true)
+	rawURL := buildAuthURL(cfg, "challenge", "state", 12345, true, LoginOptions{})
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		t.Fatalf("invalid URL: %v", err)
@@ -93,7 +93,7 @@ func TestBuildAuthURL_IncludesRequiredParams(t *testing.T) {
 		ClientID:          "test-client-id",
 		ManualRedirectURL: "https://example.com/callback",
 	}
-	rawURL := buildAuthURL(cfg, "test-challenge", "test-state", 8080, false)
+	rawURL := buildAuthURL(cfg, "test-challenge", "test-state", 8080, false, LoginOptions{})
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		t.Fatalf("invalid URL: %v", err)
@@ -114,6 +114,59 @@ func TestBuildAuthURL_IncludesRequiredParams(t *testing.T) {
 	}
 	if !strings.Contains(q.Get("scope"), "user:inference") {
 		t.Error("scope should include user:inference")
+	}
+}
+
+func TestBuildAuthURL_WithLoginHint(t *testing.T) {
+	cfg := &OAuthURLConfig{
+		AuthorizeURL:      "https://claude.ai/oauth/authorize",
+		ClientID:          "test-client-id",
+		ManualRedirectURL: "https://example.com/callback",
+	}
+	opts := LoginOptions{Email: "user@example.com"}
+	rawURL := buildAuthURL(cfg, "challenge", "state", 8080, false, opts)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("invalid URL: %v", err)
+	}
+	if got := u.Query().Get("login_hint"); got != "user@example.com" {
+		t.Errorf("login_hint: got %q, want %q", got, "user@example.com")
+	}
+}
+
+func TestBuildAuthURL_WithSSO(t *testing.T) {
+	cfg := &OAuthURLConfig{
+		AuthorizeURL:      "https://claude.ai/oauth/authorize",
+		ClientID:          "test-client-id",
+		ManualRedirectURL: "https://example.com/callback",
+	}
+	opts := LoginOptions{SSO: true}
+	rawURL := buildAuthURL(cfg, "challenge", "state", 8080, false, opts)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("invalid URL: %v", err)
+	}
+	if got := u.Query().Get("login_method"); got != "sso" {
+		t.Errorf("login_method: got %q, want %q", got, "sso")
+	}
+}
+
+func TestBuildAuthURL_WithoutOptionsNoLoginHintOrMethod(t *testing.T) {
+	cfg := &OAuthURLConfig{
+		AuthorizeURL:      "https://claude.ai/oauth/authorize",
+		ClientID:          "test-client-id",
+		ManualRedirectURL: "https://example.com/callback",
+	}
+	rawURL := buildAuthURL(cfg, "challenge", "state", 8080, false, LoginOptions{})
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("invalid URL: %v", err)
+	}
+	if got := u.Query().Get("login_hint"); got != "" {
+		t.Errorf("login_hint should be absent, got %q", got)
+	}
+	if got := u.Query().Get("login_method"); got != "" {
+		t.Errorf("login_method should be absent, got %q", got)
 	}
 }
 
