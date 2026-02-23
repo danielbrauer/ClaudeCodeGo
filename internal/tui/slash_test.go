@@ -31,8 +31,8 @@ func TestSlashRegistry_ClearCommandRegistered(t *testing.T) {
 			t.Errorf("/%s command not registered", name)
 			continue
 		}
-		if cmd.Execute != nil {
-			t.Errorf("/%s should have nil Execute (handled specially in handleSubmit)", name)
+		if cmd.Execute == nil {
+			t.Errorf("/%s should have non-nil Execute", name)
 		}
 		if cmd.Description == "" {
 			t.Errorf("/%s has empty description", name)
@@ -40,17 +40,14 @@ func TestSlashRegistry_ClearCommandRegistered(t *testing.T) {
 	}
 }
 
-func TestSlashRegistry_MemoryAndInitAreNilExecute(t *testing.T) {
+func TestSlashRegistry_AllCommandsHaveExecute(t *testing.T) {
 	r := newSlashRegistry()
 
-	// memory and init are handled specially in handleSubmit, so Execute is nil.
-	for _, name := range []string{"memory", "init"} {
-		cmd, ok := r.lookup(name)
-		if !ok {
-			t.Fatalf("command %q not found", name)
-		}
-		if cmd.Execute != nil {
-			t.Errorf("command %q should have nil Execute (handled specially)", name)
+	// All registered commands should have a non-nil Execute handler.
+	for _, name := range r.names {
+		cmd := r.commands[name]
+		if cmd.Execute == nil {
+			t.Errorf("command %q has nil Execute; all commands must be self-contained", name)
 		}
 	}
 }
@@ -187,15 +184,8 @@ func TestSlashRegistry_RegisterSkills(t *testing.T) {
 	if cmd.Execute == nil {
 		t.Fatal("skill command should have non-nil Execute")
 	}
-
-	// Execute should return the skill prefix + content.
-	output := cmd.Execute(nil)
-	if !strings.HasPrefix(output, skillCommandPrefix) {
-		t.Errorf("skill Execute should return sentinel prefix, got %q", output)
-	}
-	content := strings.TrimPrefix(output, skillCommandPrefix)
-	if content != "Please commit with a good message." {
-		t.Errorf("skill content = %q, want %q", content, "Please commit with a good message.")
+	if !cmd.IsSkill {
+		t.Error("skill command should have IsSkill=true")
 	}
 
 	// no-trigger skill should not be registered.

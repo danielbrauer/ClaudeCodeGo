@@ -91,23 +91,23 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// Create the Bubble Tea model.
-	m := newModel(
-		a.cfg.Loop,
-		loopCtx,
-		loopCancel,
-		a.cfg.Model,
-		a.cfg.Version,
-		a.initialPrompt,
-		width,
-		a.cfg.MCPManager,
-		a.cfg.Skills,
-		a.cfg.SessStore,
-		a.cfg.Session,
-		a.cfg.Settings,
-		a.cfg.OnModelSwitch,
-		a.cfg.LogoutFunc,
-		a.cfg.FastMode,
-	)
+	m := newModel(ModelConfig{
+		Loop:          a.cfg.Loop,
+		Ctx:           loopCtx,
+		CancelFn:      loopCancel,
+		ModelName:     a.cfg.Model,
+		Version:       a.cfg.Version,
+		InitialPrompt: a.initialPrompt,
+		Width:         width,
+		MCPStatus:     a.cfg.MCPManager,
+		Skills:        a.cfg.Skills,
+		SessStore:     a.cfg.SessStore,
+		Session:       a.cfg.Session,
+		Settings:      a.cfg.Settings,
+		OnModelSwitch: a.cfg.OnModelSwitch,
+		LogoutFunc:    a.cfg.LogoutFunc,
+		FastMode:      a.cfg.FastMode,
+	})
 	m.apiClient = a.cfg.Client
 
 	// Create the BT program (inline mode, no alt screen).

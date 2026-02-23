@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anthropics/claude-code-go/internal/api"
-	"github.com/anthropics/claude-code-go/internal/config"
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/anthropics/claude-code-go/internal/skills"
 )
 
@@ -14,10 +14,20 @@ import (
 type SlashCommand struct {
 	Name        string
 	Description string
-	IsHidden    bool                  // hidden commands are not shown in the help screen
-	IsAlias     bool                  // alias commands (e.g. exit→quit) are hidden from help
-	IsSkill     bool                  // true for commands added via registerSkills (shown in custom-commands tab)
-	Execute     func(m *model) string // returns output text to Println
+	IsHidden    bool                                  // hidden commands are not shown in the help screen
+	IsAlias     bool                                  // alias commands (e.g. exit→quit) are hidden from help
+	IsSkill     bool                                  // true for commands added via registerSkills (shown in custom-commands tab)
+	Execute     func(m *model, args string) (tea.Model, tea.Cmd) // returns updated model and command
+}
+
+// textCommand wraps a simple function that returns display text into a full
+// SlashCommand Execute handler. Use this for commands that only need to print
+// output without changing mode or running async work.
+func textCommand(fn func(m *model) string) func(m *model, args string) (tea.Model, tea.Cmd) {
+	return func(m *model, args string) (tea.Model, tea.Cmd) {
+		output := fn(m)
+		return *m, tea.Println(output)
+	}
 }
 
 // slashRegistry holds all registered slash commands.
@@ -32,177 +42,25 @@ func newSlashRegistry() *slashRegistry {
 		commands: make(map[string]SlashCommand),
 	}
 
-	r.register(SlashCommand{
-		Name:        "help",
-		Description: "Show help and available commands",
-		Execute:     nil, // handled specially in handleSubmit (opens help screen)
-	})
-
-	r.register(SlashCommand{
-		Name:        "model",
-		Description: "Show or switch model",
-		Execute:     nil, // handled specially in handleSubmit (needs interactive picker)
-	})
-
-	r.register(SlashCommand{
-		Name:        "version",
-		Description: "Show version",
-		Execute: func(m *model) string {
-			return fmt.Sprintf("claude %s (Go)", m.version)
-		},
-	})
-
-	r.register(SlashCommand{
-		Name:        "cost",
-		Description: "Show token usage and cost",
-		Execute: func(m *model) string {
-			return renderCostSummary(&m.tokens)
-		},
-	})
-
-	r.register(SlashCommand{
-		Name:        "context",
-		Description: "Show context window usage",
-		Execute: func(m *model) string {
-			return fmt.Sprintf("Messages in history: %d", m.loop.History().Len())
-		},
-	})
-
-	r.register(SlashCommand{
-		Name:        "mcp",
-		Description: "Show MCP server status",
-		Execute: func(m *model) string {
-			if m.mcpStatus == nil {
-				return "No MCP servers configured."
-			}
-			servers := m.mcpStatus.Servers()
-			if len(servers) == 0 {
-				return "No MCP servers connected."
-			}
-			var b strings.Builder
-			b.WriteString(fmt.Sprintf("MCP servers (%d):\n", len(servers)))
-			for _, name := range servers {
-				b.WriteString("  " + m.mcpStatus.ServerStatus(name) + "\n")
-			}
-			return strings.TrimRight(b.String(), "\n")
-		},
-	})
-
-	r.register(SlashCommand{
-		Name:        "config",
-		Description: "Open config panel",
-		Execute:     nil, // handled specially in handleSubmit (needs mode switch)
-	})
-
-	r.register(SlashCommand{
-		Name:        "settings",
-		Description: "Open config panel",
-		IsAlias:     true,
-		Execute:     nil, // alias for config
-	})
-
-	r.register(SlashCommand{
-		Name:        "clear",
-		Description: "Clear conversation history and free up context",
-		Execute:     nil, // handled specially in handleSubmit (resets session state)
-	})
-
-	r.register(SlashCommand{
-		Name:        "reset",
-		Description: "Clear conversation history and free up context",
-		IsAlias:     true,
-		Execute:     nil, // alias for clear
-	})
-
-	r.register(SlashCommand{
-		Name:        "new",
-		Description: "Clear conversation history and free up context",
-		IsAlias:     true,
-		Execute:     nil, // alias for clear
-	})
-
-	r.register(SlashCommand{
-		Name:        "memory",
-		Description: "Edit Claude memory files",
-		Execute:     nil, // handled specially in handleSubmit (needs tea.Exec)
-	})
-
-	r.register(SlashCommand{
-		Name:        "init",
-		Description: "Initialize a new CLAUDE.md file with codebase documentation",
-		Execute:     nil, // handled specially in handleSubmit (sends prompt to loop)
-	})
-
-	r.register(SlashCommand{
-		Name:        "login",
-		Description: "Sign in to your Anthropic account",
-		Execute:     nil, // handled specially in handleSubmit (triggers quit + re-auth)
-	})
-
-	r.register(SlashCommand{
-		Name:        "logout",
-		Description: "Log out from your Anthropic account",
-		Execute:     nil, // handled specially in handleSubmit (clears credentials + quits)
-	})
-
-	r.register(SlashCommand{
-		Name:        "compact",
-		Description: "Compact conversation history",
-		Execute:     nil, // handled specially in Update (needs async)
-	})
-
-	r.register(SlashCommand{
-		Name:        "resume",
-		Description: "Resume a previous session",
-		Execute:     nil, // handled specially in Update (needs session picker)
-	})
-
-	r.register(SlashCommand{
-		Name:        "continue",
-		Description: "Resume the most recent session",
-		Execute:     nil, // handled specially in Update
-	})
-
-	r.register(SlashCommand{
-		Name:        "diff",
-		Description: "View uncommitted changes",
-		Execute:     nil, // handled specially in handleSubmit (needs async git)
-	})
-
-	r.register(SlashCommand{
-		Name:        "review",
-		Description: "Review a pull request",
-		Execute:     nil, // handled specially in handleSubmit (sends prompt to loop)
-	})
-
-	r.register(SlashCommand{
-		Name:        "fast",
-		Description: "Toggle fast mode (" + api.FastModeDisplayName + " only)",
-		Execute: func(m *model) string {
-			applyFastMode(m, !m.fastMode)
-
-			// Persist to user settings.
-			_ = config.SaveUserSetting("fastMode", m.fastMode)
-
-			if m.fastMode {
-				return "Fast mode ON"
-			}
-			return "Fast mode OFF"
-		},
-	})
-
-	r.register(SlashCommand{
-		Name:        "quit",
-		Description: "Exit the program",
-		Execute:     nil, // handled specially in Update
-	})
-
-	r.register(SlashCommand{
-		Name:        "exit",
-		Description: "Exit the program",
-		IsAlias:     true,
-		Execute:     nil, // alias for quit
-	})
+	registerClearCommand(r)
+	registerResumeCommand(r)
+	registerContinueCommand(r)
+	registerLoginCommand(r)
+	registerLogoutCommand(r)
+	registerVersionCommand(r)
+	registerCostCommand(r)
+	registerContextCommand(r)
+	registerMCPCommand(r)
+	registerFastCommand(r)
+	registerHelpCommand(r)
+	registerConfigCommand(r)
+	registerModelCommand(r)
+	registerDiffCommand(r)
+	registerMemoryCommand(r)
+	registerCompactCommand(r)
+	registerInitCommand(r)
+	registerReviewCommand(r)
+	registerExitCommands(r)
 
 	return r
 }
@@ -277,19 +135,12 @@ func (r *slashRegistry) registerSkills(loadedSkills []skills.Skill) {
 			Name:        name,
 			Description: s.Description,
 			IsSkill:     true,
-			Execute: func(m *model) string {
-				// Return the skill content as a sentinel — handleSubmit
-				// will detect this prefix and send it as a message.
-				return skillCommandPrefix + skillContent
+			Execute: func(m *model, args string) (tea.Model, tea.Cmd) {
+				return sendToLoop(m, skillContent)
 			},
 		})
 	}
 }
-
-// skillCommandPrefix is a sentinel prefix used to identify skill slash commands.
-// When a slash command's Execute returns a string starting with this prefix,
-// the remainder is sent as a user message to the agentic loop.
-const skillCommandPrefix = "\x00SKILL:"
 
 // visibleCommands returns all commands that should be shown in the help screen,
 // filtering out aliases and hidden commands. Commands are returned in sorted order.
@@ -313,4 +164,16 @@ func (r *slashRegistry) helpText() string {
 		b.WriteString(fmt.Sprintf("  /%-12s %s\n", cmd.Name, cmd.Description))
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// sendToLoop switches to streaming mode and sends a prompt to the agentic loop.
+// This is a shared helper for commands that delegate to the conversation loop.
+func sendToLoop(m *model, prompt string) (tea.Model, tea.Cmd) {
+	m.mode = modeStreaming
+	m.textInput.Blur()
+	loopCmd := func() tea.Msg {
+		err := m.loop.SendMessage(m.ctx, prompt)
+		return LoopDoneMsg{Err: err}
+	}
+	return *m, tea.Batch(loopCmd, m.spinner.Tick)
 }

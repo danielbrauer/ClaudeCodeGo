@@ -11,11 +11,7 @@ import (
 func TestE2E_ContextCommand_EmptyHistory(t *testing.T) {
 	m, _ := testModel(t)
 
-	cmd, ok := m.slashReg.lookup("context")
-	if !ok {
-		t.Fatal("/context not registered")
-	}
-	output := cmd.Execute(&m)
+	output := contextText(&m)
 
 	if !strings.Contains(output, "Messages in history: 0") {
 		t.Errorf("context output should show 0 messages, got %q", output)
@@ -33,8 +29,7 @@ func TestE2E_ContextCommand_WithMessages(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	cmd, _ := m.slashReg.lookup("context")
-	output := cmd.Execute(&m)
+	output := contextText(&m)
 
 	// Should have 2 messages: user + assistant.
 	if !strings.Contains(output, "Messages in history: 2") {

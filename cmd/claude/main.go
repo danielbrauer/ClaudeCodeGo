@@ -29,20 +29,53 @@ var (
 	version = "dev"
 )
 
-func main() {
-	// Check for subcommands before flag parsing.
-	// The JS CLI uses Commander.js subcommands: `claude login`, `claude logout`, `claude status`.
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "login":
-			runLogin(os.Args[2:])
-			return
-		case "logout":
-			runLogout()
-			return
+// subcommand defines a CLI subcommand (e.g. `claude login`).
+type subcommand struct {
+	Name string
+	Run  func(args []string) // args is everything after the subcommand name
+}
+
+// subcommandRegistry holds all registered CLI subcommands.
+var subcommandRegistry []subcommand
+
+func registerSubcommand(cmd subcommand) {
+	subcommandRegistry = append(subcommandRegistry, cmd)
+}
+
+func init() {
+	registerSubcommand(subcommand{Name: "login", Run: func(args []string) { runLogin(args) }})
+	registerSubcommand(subcommand{Name: "logout", Run: func(args []string) { runLogout() }})
+	registerSubcommand(subcommand{Name: "status", Run: func(args []string) { runStatus(args) }})
+}
+
+// dispatchSubcommand checks os.Args for a registered subcommand and runs it.
+// Returns true if a subcommand was dispatched.
+func dispatchSubcommand() bool {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		return false
+	}
+
+	// Match "claude <subcmd> [flags]".
+	for _, cmd := range subcommandRegistry {
+		if args[0] == cmd.Name {
+			cmd.Run(args[1:])
+			return true
 		}
 	}
-	if handleSubcommand() {
+
+	// Match "claude auth status [flags]" (compound subcommand).
+	if args[0] == "auth" && len(args) > 1 && args[1] == "status" {
+		runStatus(args[2:])
+		return true
+	}
+
+	return false
+}
+
+func main() {
+	// Check for subcommands before flag parsing.
+	if dispatchSubcommand() {
 		return
 	}
 
@@ -392,29 +425,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-}
-
-// handleSubcommand checks for subcommands ("status", "auth status") before
-// flag parsing. Returns true if a subcommand was handled.
-func handleSubcommand() bool {
-	args := os.Args[1:]
-	if len(args) == 0 {
-		return false
-	}
-
-	// Match "claude status [flags]" or "claude auth status [flags]".
-	var subcmdArgs []string
-	switch {
-	case args[0] == "status":
-		subcmdArgs = args[1:]
-	case args[0] == "auth" && len(args) > 1 && args[1] == "status":
-		subcmdArgs = args[2:]
-	default:
-		return false
-	}
-
-	runStatus(subcmdArgs)
-	return true
 }
 
 // runStatus executes the status subcommand. Output is JSON by default (matching
