@@ -50,6 +50,19 @@ var (
 	permHintStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
 
+	// Permission prompt: the command/summary being approved (readable but not dominant).
+	permSummaryStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#9CA3AF"))
+
+	// Permission prompt: action keys line — stands out as the call to action.
+	permActionStyle = lipgloss.NewStyle().
+				Foreground(colorWhite)
+
+	// Permission prompt: highlighted key letters (y/n/a) in the action line.
+	permKeyStyle = lipgloss.NewStyle().
+			Foreground(colorYellow).
+			Bold(true)
+
 	// Status bar.
 	statusBarStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
