@@ -385,12 +385,12 @@ func TestIsOpus46Model(t *testing.T) {
 
 func TestClient_SetModel(t *testing.T) {
 	client := NewClient(&staticTokenSource{token: "t"})
-	if client.Model() != ModelClaude46Sonnet {
+	if client.Model() != ModelClaude46Opus {
 		t.Fatalf("default model = %q", client.Model())
 	}
-	client.SetModel(ModelClaude46Opus)
-	if client.Model() != ModelClaude46Opus {
-		t.Errorf("after SetModel: got %q, want %q", client.Model(), ModelClaude46Opus)
+	client.SetModel(ModelClaude46Sonnet)
+	if client.Model() != ModelClaude46Sonnet {
+		t.Errorf("after SetModel: got %q, want %q", client.Model(), ModelClaude46Sonnet)
 	}
 }
 

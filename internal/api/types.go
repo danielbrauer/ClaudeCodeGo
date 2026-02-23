@@ -40,8 +40,8 @@ type ModelOption struct {
 
 // AvailableModels is the ordered list of models shown in the /model picker.
 var AvailableModels = []ModelOption{
-	{Alias: "sonnet", ID: ModelClaude46Sonnet, DisplayName: "Sonnet 4.6", Description: "Best for everyday tasks (default)"},
-	{Alias: "opus", ID: ModelClaude46Opus, DisplayName: "Opus 4.6", Description: "Most capable for complex work"},
+	{Alias: "opus", ID: ModelClaude46Opus, DisplayName: "Opus 4.6", Description: "Most capable for complex work (default)"},
+	{Alias: "sonnet", ID: ModelClaude46Sonnet, DisplayName: "Sonnet 4.6", Description: "Best for everyday tasks"},
 	{Alias: "haiku", ID: ModelClaude45Haiku, DisplayName: "Haiku 4.5", Description: "Fastest for quick answers"},
 }
 
