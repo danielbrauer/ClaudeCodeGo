@@ -91,6 +91,27 @@ func TestReplaceRangeInvalidBounds(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// FastMode getter/setter
+// ===========================================================================
+
+func TestLoopFastMode(t *testing.T) {
+	loop := NewLoop(LoopConfig{})
+	if loop.FastMode() {
+		t.Error("FastMode should be false by default")
+	}
+
+	loop.SetFastMode(true)
+	if !loop.FastMode() {
+		t.Error("FastMode should be true after SetFastMode(true)")
+	}
+
+	loop.SetFastMode(false)
+	if loop.FastMode() {
+		t.Error("FastMode should be false after SetFastMode(false)")
+	}
+}
+
 func TestNewHistoryFromIndependence(t *testing.T) {
 	msgs := []api.Message{
 		api.NewTextMessage("user", "hello"),

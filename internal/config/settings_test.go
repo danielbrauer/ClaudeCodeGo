@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -289,6 +290,45 @@ func TestMergeSettings(t *testing.T) {
 	}
 }
 
+func TestMergeSettingsFastMode(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	tests := []struct {
+		name     string
+		base     *bool
+		overlay  *bool
+		wantNil  bool
+		wantVal  bool
+	}{
+		{"both nil", nil, nil, true, false},
+		{"base set, overlay nil", boolPtr(true), nil, false, true},
+		{"base nil, overlay set", nil, boolPtr(true), false, true},
+		{"overlay overrides base true→false", boolPtr(true), boolPtr(false), false, false},
+		{"overlay overrides base false→true", boolPtr(false), boolPtr(true), false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := &Settings{FastMode: tt.base}
+			overlay := &Settings{FastMode: tt.overlay}
+			result := mergeSettings(base, overlay)
+
+			if tt.wantNil {
+				if result.FastMode != nil {
+					t.Errorf("FastMode = %v, want nil", *result.FastMode)
+				}
+			} else {
+				if result.FastMode == nil {
+					t.Fatalf("FastMode is nil, want %v", tt.wantVal)
+				}
+				if *result.FastMode != tt.wantVal {
+					t.Errorf("FastMode = %v, want %v", *result.FastMode, tt.wantVal)
+				}
+			}
+		})
+	}
+}
+
 func TestBoolVal(t *testing.T) {
 	tests := []struct {
 		name string
@@ -380,6 +420,35 @@ func TestMergeSettingsUserPreferencesBaseOnly(t *testing.T) {
 	}
 	if result.NotifChannel != "iterm2" {
 		t.Errorf("NotifChannel = %q, want %q", result.NotifChannel, "iterm2")
+	}
+}
+
+func TestFastModeSerialization(t *testing.T) {
+	boolPtr := func(v bool) *bool { return &v }
+
+	// Test that FastMode round-trips through JSON.
+	s := &Settings{
+		Model:    "opus",
+		FastMode: boolPtr(true),
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var s2 Settings
+	if err := json.Unmarshal(data, &s2); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if s2.FastMode == nil || !*s2.FastMode {
+		t.Errorf("round-tripped FastMode = %v, want true", s2.FastMode)
+	}
+
+	// nil FastMode should be omitted from JSON.
+	s3 := &Settings{Model: "sonnet"}
+	data3, _ := json.Marshal(s3)
+	if strings.Contains(string(data3), "fastMode") {
+		t.Errorf("nil FastMode should be omitted from JSON, got: %s", data3)
 	}
 }
 
@@ -498,6 +567,38 @@ func TestLoadSettingsUserPreferences(t *testing.T) {
 	}
 	if settings.FastMode == nil || *settings.FastMode != true {
 		t.Errorf("FastMode = %v, want true", settings.FastMode)
+	}
+}
+
+func TestLoadSettingsFastModeProjectOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cwd := t.TempDir()
+
+	// User level: fastMode true.
+	userDir := filepath.Join(home, ".claude")
+	os.MkdirAll(userDir, 0755)
+	os.WriteFile(filepath.Join(userDir, "settings.json"), []byte(`{
+		"fastMode": true
+	}`), 0644)
+
+	// Project level: fastMode false.
+	projDir := filepath.Join(cwd, ".claude")
+	os.MkdirAll(projDir, 0755)
+	os.WriteFile(filepath.Join(projDir, "settings.json"), []byte(`{
+		"fastMode": false
+	}`), 0644)
+
+	settings, err := LoadSettings(cwd)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if settings.FastMode == nil {
+		t.Fatal("FastMode is nil, want false")
+	}
+	if *settings.FastMode {
+		t.Errorf("FastMode = true, want false (project override)")
 	}
 }
 
