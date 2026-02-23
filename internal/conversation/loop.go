@@ -155,10 +155,24 @@ func (l *Loop) SetOnTurnComplete(fn func(history *History)) {
 
 func (l *Loop) run(ctx context.Context) error {
 	for {
+		msgs := l.history.Messages()
+		system := l.system
+		tools := l.tools
+
+		// Apply prompt caching if enabled for the current model.
+		// This adds cache_control breakpoints to system blocks, tool
+		// definitions, and the last ~2 conversation messages so the API
+		// can serve cached prefixes instead of reprocessing everything.
+		if IsCachingEnabled(l.client.Model()) {
+			system = WithSystemPromptCaching(system)
+			tools = WithToolsCaching(tools)
+			msgs = WithMessageCaching(msgs)
+		}
+
 		req := &api.CreateMessageRequest{
-			Messages: l.history.Messages(),
-			System:   l.system,
-			Tools:    l.tools,
+			Messages: msgs,
+			System:   system,
+			Tools:    tools,
 		}
 
 		// Apply fast mode: add speed:"fast" when enabled on an eligible model.

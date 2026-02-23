@@ -176,9 +176,10 @@ type ImageSource struct {
 
 // ToolDefinition is sent to the API to describe an available tool.
 type ToolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
 }
 
 // MessageResponse is the full (non-streaming) response from the Messages API.
