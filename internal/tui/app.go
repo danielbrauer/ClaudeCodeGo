@@ -138,13 +138,20 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	line3 := cwdDisplay
 
-	// Orange mascot (▗ ▗  ▖ ▖ / ▘▘ ▝▝) with info beside it.
-	orange := "\033[38;5;215m" // light orange
-	reset := "\033[0m"
+	// Orange mascot with info beside it. The body uses background coloring
+	// to form a solid shape (matches the JS CLI's "clawd" mascot).
+	// Color: rgb(215,119,87) — the official "clawd_body" color.
+	oFg := "\033[38;2;215;119;87m"  // orange foreground
+	oBg := "\033[48;2;215;119;87m"  // orange background
+	bFg := "\033[38;2;0;0;0m"       // black foreground (eyes)
+	rst := "\033[0m"
 	fmt.Println()
-	fmt.Printf("%s▗ ▗   ▖ ▖%s  %s\n", orange, reset, line1)
-	fmt.Printf("           %s\n", line2)
-	fmt.Printf("%s  ▘▘ ▝▝%s    %s\n", orange, reset, line3)
+	// Line 1: outer ▗/▖ orange fg; inner " ▗   ▖ " black-on-orange (eyes).
+	fmt.Printf("%s▗%s%s ▗   ▖ %s%s▖%s  %s\n", oFg, bFg, oBg, rst, oFg, rst, line1)
+	// Line 2: solid orange body (7 spaces with orange background).
+	fmt.Printf(" %s       %s   %s\n", oBg, rst, line2)
+	// Line 3: feet in orange foreground only.
+	fmt.Printf("%s  ▘▘ ▝▝%s    %s\n", oFg, rst, line3)
 	fmt.Println()
 
 	// Run the BT event loop (blocks until quit).
