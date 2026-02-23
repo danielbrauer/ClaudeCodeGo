@@ -104,6 +104,9 @@ type model struct {
 	// Fast mode toggle.
 	fastMode bool
 
+	// Shortcuts help panel visible.
+	shortcutsVisible bool
+
 	// Initial prompt to send on start.
 	initialPrompt string
 
@@ -371,7 +374,24 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.textInput.Reset()
 			return m.handleSubmit(text)
 
+		case tea.KeyRunes:
+			// Toggle shortcuts help when "?" is typed into an empty input.
+			if string(msg.Runes) == "?" && strings.TrimSpace(m.textInput.Value()) == "" {
+				m.shortcutsVisible = !m.shortcutsVisible
+				return m, nil
+			}
+			// Any other key dismisses shortcuts if visible.
+			if m.shortcutsVisible {
+				m.shortcutsVisible = false
+			}
+			var cmd tea.Cmd
+			m.textInput, cmd = m.textInput.Update(msg)
+			return m, cmd
+
 		default:
+			if m.shortcutsVisible {
+				m.shortcutsVisible = false
+			}
 			var cmd tea.Cmd
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
@@ -394,6 +414,9 @@ func isExitCommand(text string) bool {
 // handleSubmit processes submitted text (user message or slash command).
 func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// Dismiss shortcuts panel on any submission.
+	m.shortcutsVisible = false
 
 	// Echo user input to scrollback.
 	userLine := userLabelStyle.Render("> ") + text
@@ -918,14 +941,23 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// 7. Input area.
+	// 7. Input area or shortcuts panel.
 	if m.mode == modeInput {
-		b.WriteString(m.textInput.View())
-		b.WriteString("\n")
+		if m.shortcutsVisible {
+			b.WriteString(renderShortcutsHelp(m.width))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(m.textInput.View())
+			b.WriteString("\n")
+		}
 	}
 
-	// 8. Status bar.
-	b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
+	// 8. Status bar with optional "? for shortcuts" hint.
+	statusBar := renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode)
+	if m.mode == modeInput && !m.shortcutsVisible && strings.TrimSpace(m.textInput.Value()) == "" {
+		statusBar += "  " + permHintStyle.Render("? for shortcuts")
+	}
+	b.WriteString(statusBar)
 
 	return b.String()
 }
