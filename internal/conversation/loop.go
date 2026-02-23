@@ -89,6 +89,11 @@ func (l *Loop) SetHandler(h api.StreamHandler) {
 	l.handler = h
 }
 
+// SetModel changes the model used for subsequent API calls.
+func (l *Loop) SetModel(model string) {
+	l.client.SetModel(model)
+}
+
 // SetPermissionHandler replaces the permission handler on the tool executor.
 // This is a no-op if the executor doesn't support it.
 func (l *Loop) SetPermissionHandler(h interface{}) {

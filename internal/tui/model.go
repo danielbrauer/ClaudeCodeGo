@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -19,10 +21,11 @@ import (
 type uiMode int
 
 const (
-	modeInput      uiMode = iota // waiting for user text
-	modeStreaming                 // receiving API response
-	modePermission               // waiting for permission y/n
-	modeAskUser                  // waiting for ask-user response
+	modeInput       uiMode = iota // waiting for user text
+	modeStreaming                  // receiving API response
+	modePermission                 // waiting for permission y/n
+	modeAskUser                    // waiting for ask-user response
+	modeModelPicker                // choosing a model via /model
 )
 
 // model is the Bubble Tea model for the TUI.
@@ -66,14 +69,26 @@ type model struct {
 	askCustomInput bool   // currently typing custom "Other" input
 	askCustomText  string // accumulated custom text
 
+	// Model picker state.
+	modelPickerCursor int
+
+	// Callback invoked when the model is switched.
+	onModelSwitch func(newModel string)
+
 	// Todo list.
 	todos []tools.TodoItem
+
+	// Auth callbacks.
+	logoutFunc func() error // Clears credentials; nil if not available.
 
 	// Initial prompt to send on start.
 	initialPrompt string
 
 	// Whether we should quit.
 	quitting bool
+
+	// Exit action to signal the caller (e.g., re-run login after TUI exits).
+	exitAction ExitAction
 }
 
 // newModel creates the initial Bubble Tea model.
@@ -88,6 +103,8 @@ func newModel(
 	loadedSkills []skills.Skill,
 	sess *session.Session,
 	sessStore *session.Store,
+	onModelSwitch func(newModel string),
+	logoutFunc func() error,
 ) model {
 	ti := newTextInput(width)
 	sp := newSpinner()
@@ -108,6 +125,7 @@ func newModel(
 		mcpStatus:     mcpStatus,
 		session:       sess,
 		sessStore:     sessStore,
+		onModelSwitch: onModelSwitch,
 		mode:          modeInput,
 		width:         width,
 		height:        24,
@@ -115,6 +133,7 @@ func newModel(
 		spinner:       sp,
 		mdRenderer:    md,
 		slashReg:      slash,
+		logoutFunc:    logoutFunc,
 		initialPrompt: initialPrompt,
 	}
 }
@@ -222,6 +241,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 		return m, tea.Batch(append(cmds, textarea.Blink)...)
 
+	// ── Memory edit done ──
+	case MemoryEditDoneMsg:
+		var output string
+		if msg.Err != nil {
+			output = "Editor exited with error: " + msg.Err.Error()
+		} else {
+			output = editorHintMessage(msg.Path)
+		}
+		m.mode = modeInput
+		m.textInput.Focus()
+		return m, tea.Batch(tea.Println(output), textarea.Blink)
+
 	// ── Permission prompt ──
 	case PermissionRequestMsg:
 		m.permissionPending = &msg
@@ -270,6 +301,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case modeAskUser:
 		return m.handleAskUserKey(msg)
+
+	case modeModelPicker:
+		return m.handleModelPickerKey(msg)
 
 	case modeStreaming:
 		// Ctrl+C during streaming cancels the loop.
@@ -338,6 +372,25 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+		if cmdName == "login" {
+			cmds = append(cmds, tea.Println("Exiting session for re-authentication..."))
+			m.exitAction = ExitLogin
+			m.quitting = true
+			return m, tea.Batch(append(cmds, tea.Quit)...)
+		}
+
+		if cmdName == "logout" {
+			if m.logoutFunc != nil {
+				if err := m.logoutFunc(); err != nil {
+					cmds = append(cmds, tea.Println(errorStyle.Render("Failed to log out.")))
+					return m, tea.Batch(cmds...)
+				}
+			}
+			cmds = append(cmds, tea.Println("Successfully logged out from your Anthropic account."))
+			m.quitting = true
+			return m, tea.Batch(append(cmds, tea.Quit)...)
+		}
+
 		if cmdName == "compact" {
 			m.mode = modeStreaming
 			return m, func() tea.Msg {
@@ -387,6 +440,39 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 			cmds = append(cmds, tea.Println("Conversation cleared. Starting fresh."))
 			return m, tea.Batch(cmds...)
+		}
+
+		if cmdName == "memory" {
+			arg := ""
+			if len(parts) > 1 {
+				arg = strings.TrimSpace(parts[1])
+			}
+			cwd, _ := os.Getwd()
+			filePath := memoryFilePath(arg, cwd)
+			editorCmd, err := editorCommand(filePath)
+			if err != nil {
+				cmds = append(cmds, tea.Println("Error: "+err.Error()))
+				return m, tea.Batch(cmds...)
+			}
+			execCb := func(err error) tea.Msg {
+				return MemoryEditDoneMsg{Path: filePath, Err: err}
+			}
+			return m, tea.Batch(append(cmds, tea.ExecProcess(editorCmd, execCb))...)
+		}
+
+		if cmdName == "init" {
+			m.mode = modeStreaming
+			m.textInput.Blur()
+			loopCmd := func() tea.Msg {
+				err := m.loop.SendMessage(m.ctx, initPrompt)
+				return LoopDoneMsg{Err: err}
+			}
+			cmds = append(cmds, loopCmd, m.spinner.Tick)
+			return m, tea.Batch(cmds...)
+		}
+
+		if cmdName == "model" {
+			return m.handleModelCommand(parts)
 		}
 
 		if cmd, ok := m.slashReg.lookup(cmdName); ok && cmd.Execute != nil {
@@ -603,19 +689,25 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// 5. Todo list.
+	// 5. Model picker.
+	if m.mode == modeModelPicker {
+		b.WriteString(m.renderModelPicker())
+		b.WriteString("\n")
+	}
+
+	// 6. Todo list.
 	if len(m.todos) > 0 {
 		b.WriteString(renderTodoList(m.todos))
 		b.WriteString("\n")
 	}
 
-	// 6. Input area.
+	// 7. Input area.
 	if m.mode == modeInput {
 		b.WriteString(m.textInput.View())
 		b.WriteString("\n")
 	}
 
-	// 7. Status bar.
+	// 8. Status bar.
 	b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width))
 
 	return b.String()
@@ -652,6 +744,101 @@ func (m model) renderAskUserPrompt() string {
 	}
 
 	b.WriteString(permHintStyle.Render("  Use arrow keys to navigate, Enter to select"))
+
+	return b.String()
+}
+
+// handleModelCommand processes /model with optional argument.
+func (m model) handleModelCommand(parts []string) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	if len(parts) < 2 {
+		// No argument: open interactive model picker.
+		m.modelPickerCursor = 0
+		// Pre-select the current model.
+		for i, opt := range api.AvailableModels {
+			if opt.ID == m.modelName || opt.Alias == m.modelName {
+				m.modelPickerCursor = i
+				break
+			}
+		}
+		m.mode = modeModelPicker
+		return m, nil
+	}
+
+	// Argument provided: switch directly.
+	arg := strings.TrimSpace(parts[1])
+	resolved := api.ResolveModelAlias(arg)
+
+	return m.switchModel(resolved, cmds)
+}
+
+// switchModel updates the model across the loop, TUI state, and session.
+func (m model) switchModel(newModel string, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
+	m.loop.SetModel(newModel)
+	m.modelName = newModel
+
+	if m.onModelSwitch != nil {
+		m.onModelSwitch(newModel)
+	}
+
+	display := api.ModelDisplayName(newModel)
+	msg := fmt.Sprintf("Switched to model: %s (%s)", display, newModel)
+	cmds = append(cmds, tea.Println(msg))
+	return m, tea.Batch(cmds...)
+}
+
+// handleModelPickerKey processes key events during the model picker.
+func (m model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	numOptions := len(api.AvailableModels)
+
+	switch msg.Type {
+	case tea.KeyUp:
+		if m.modelPickerCursor > 0 {
+			m.modelPickerCursor--
+		}
+		return m, nil
+
+	case tea.KeyDown:
+		if m.modelPickerCursor < numOptions-1 {
+			m.modelPickerCursor++
+		}
+		return m, nil
+
+	case tea.KeyEnter:
+		selected := api.AvailableModels[m.modelPickerCursor]
+		m.mode = modeInput
+		m.textInput.Focus()
+		return m.switchModel(selected.ID, []tea.Cmd{textarea.Blink})
+
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.mode = modeInput
+		m.textInput.Focus()
+		return m, tea.Println("Model selection cancelled.")
+	}
+
+	return m, nil
+}
+
+// renderModelPicker renders the model selection UI.
+func (m model) renderModelPicker() string {
+	var b strings.Builder
+
+	b.WriteString(askHeaderStyle.Render("[Model]") + " " + askQuestionStyle.Render("Select a model:") + "\n")
+
+	for i, opt := range api.AvailableModels {
+		current := ""
+		if opt.ID == m.modelName {
+			current = " (current)"
+		}
+		if i == m.modelPickerCursor {
+			b.WriteString(askSelectedStyle.Render(fmt.Sprintf("  > %s%s", opt.DisplayName, current)) + " " + askOptionStyle.Render(opt.Description) + "\n")
+		} else {
+			b.WriteString(askOptionStyle.Render(fmt.Sprintf("    %s%s %s", opt.DisplayName, current, opt.Description)) + "\n")
+		}
+	}
+
+	b.WriteString(permHintStyle.Render("  Use arrow keys to navigate, Enter to select, Esc to cancel"))
 
 	return b.String()
 }
