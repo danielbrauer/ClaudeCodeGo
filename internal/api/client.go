@@ -195,6 +195,44 @@ func (c *Client) doAPIRequest(ctx context.Context, body []byte, extraBetas []str
 	return nil, fmt.Errorf("API request failed after retry")
 }
 
+// CreateMessage sends a non-streaming Messages API request and returns the response.
+// Used for lightweight calls like prompt suggestion generation.
+func (c *Client) CreateMessage(
+	ctx context.Context,
+	req *CreateMessageRequest,
+) (*MessageResponse, error) {
+	if req.Model == "" {
+		req.Model = c.model
+	}
+	if req.MaxTokens == 0 {
+		req.MaxTokens = c.maxTokens
+	}
+	req.Stream = false
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	resp, err := c.doAPIRequest(ctx, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var msgResp MessageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	return &msgResp, nil
+}
+
 // responseAssembler collects streaming events into a final MessageResponse.
 type responseAssembler struct {
 	handler  StreamHandler
