@@ -118,4 +118,12 @@ var (
 	// Shortcuts hint shown below the input area.
 	shortcutsHintStyle = lipgloss.NewStyle().
 				Foreground(colorDim)
+
+	// Queued message styles.
+	queuedLabelStyle = lipgloss.NewStyle().
+				Foreground(colorDim).
+				Bold(true)
+
+	queuedBadgeStyle = lipgloss.NewStyle().
+				Foreground(colorYellow)
 )

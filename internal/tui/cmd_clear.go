@@ -42,6 +42,9 @@ func executeClear(m *model, args string) (tea.Model, tea.Cmd) {
 	// Clear todo list.
 	m.todos = nil
 
+	// Clear any queued messages.
+	m.queue.Clear()
+
 	// Create a new session, preserving the model and CWD.
 	if m.session != nil {
 		m.session = &session.Session{
