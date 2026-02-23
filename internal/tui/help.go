@@ -37,32 +37,87 @@ func (m model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyLeft:
 		if m.helpTab > 0 {
 			m.helpTab--
+			m.helpScrollOff = 0
 		}
 		return m, nil
 
 	case tea.KeyRight:
 		if m.helpTab < helpTabCount-1 {
 			m.helpTab++
+			m.helpScrollOff = 0
 		}
 		return m, nil
 
 	case tea.KeyTab:
 		m.helpTab = (m.helpTab + 1) % helpTabCount
+		m.helpScrollOff = 0
 		return m, nil
 
 	case tea.KeyShiftTab:
 		m.helpTab = (m.helpTab + helpTabCount - 1) % helpTabCount
+		m.helpScrollOff = 0
+		return m, nil
+
+	case tea.KeyUp:
+		if m.helpScrollOff > 0 {
+			m.helpScrollOff--
+		}
+		return m, nil
+
+	case tea.KeyDown:
+		m.helpScrollOff++
+		return m, nil
+
+	case tea.KeyPgUp:
+		vp := m.helpViewportHeight()
+		m.helpScrollOff -= vp
+		if m.helpScrollOff < 0 {
+			m.helpScrollOff = 0
+		}
+		return m, nil
+
+	case tea.KeyPgDown:
+		m.helpScrollOff += m.helpViewportHeight()
 		return m, nil
 
 	default:
-		// 'q' also closes the help screen.
-		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'q' {
-			m.mode = modeInput
-			m.textInput.Focus()
-			return m, textarea.Blink
+		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'q':
+				// 'q' closes the help screen.
+				m.mode = modeInput
+				m.textInput.Focus()
+				return m, textarea.Blink
+			case 'j':
+				m.helpScrollOff++
+				return m, nil
+			case 'k':
+				if m.helpScrollOff > 0 {
+					m.helpScrollOff--
+				}
+				return m, nil
+			}
 		}
 		return m, nil
 	}
+}
+
+// helpHeaderLines is the number of fixed lines above the scrollable content:
+// title, blank, tab bar, blank.
+const helpHeaderLines = 4
+
+// helpFooterLines is the number of fixed lines below the scrollable content:
+// blank, docs URL, blank, close hint.
+const helpFooterLines = 4
+
+// helpViewportHeight returns the number of visible content lines available for
+// the scrollable tab content area.
+func (m model) helpViewportHeight() int {
+	h := m.height - helpHeaderLines - helpFooterLines
+	if h < 1 {
+		h = 1
+	}
+	return h
 }
 
 // Styles for the help screen.
@@ -93,34 +148,85 @@ var (
 			Italic(true)
 )
 
-// renderHelpScreen renders the full help screen.
+// renderHelpScreen renders the full help screen with scrolling support.
+// The title and tab bar are always visible at the top, the footer is always
+// visible at the bottom, and the tab content scrolls between them.
 func (m model) renderHelpScreen() string {
 	var b strings.Builder
 
-	// Title bar.
+	// ── Fixed header ──
 	title := fmt.Sprintf("Claude Code v%s", m.version)
 	b.WriteString(helpTitleStyle.Render(title))
 	b.WriteString("\n\n")
-
-	// Tab bar.
 	b.WriteString(m.renderHelpTabs())
 	b.WriteString("\n\n")
 
-	// Tab content.
+	// ── Tab content (scrollable) ──
+	var content string
 	switch m.helpTab {
 	case helpTabGeneral:
-		b.WriteString(m.renderHelpGeneral())
+		content = m.renderHelpGeneral()
 	case helpTabCommands:
-		b.WriteString(m.renderHelpCommands())
+		content = m.renderHelpCommands()
 	case helpTabCustomCommands:
-		b.WriteString(m.renderHelpCustomCommands())
+		content = m.renderHelpCustomCommands()
 	}
 
-	// Footer.
+	// Split content into lines for scrolling.
+	lines := strings.Split(content, "\n")
+	// Remove trailing empty line from the split if the content ended with \n.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	totalLines := len(lines)
+	vpHeight := m.helpViewportHeight()
+
+	// Clamp scroll offset.
+	maxScroll := totalLines - vpHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.helpScrollOff > maxScroll {
+		m.helpScrollOff = maxScroll
+	}
+	if m.helpScrollOff < 0 {
+		m.helpScrollOff = 0
+	}
+
+	needsScroll := totalLines > vpHeight
+
+	// Show "more above" indicator or blank line.
+	if needsScroll && m.helpScrollOff > 0 {
+		b.WriteString(helpFooterStyle.Render(fmt.Sprintf("  ↑ %d more lines above", m.helpScrollOff)))
+		b.WriteString("\n")
+	}
+
+	// Render visible content lines.
+	end := m.helpScrollOff + vpHeight
+	if end > totalLines {
+		end = totalLines
+	}
+	for i := m.helpScrollOff; i < end; i++ {
+		b.WriteString(lines[i])
+		b.WriteString("\n")
+	}
+
+	// Show "more below" indicator.
+	if needsScroll && end < totalLines {
+		b.WriteString(helpFooterStyle.Render(fmt.Sprintf("  ↓ %d more lines below", totalLines-end)))
+		b.WriteString("\n")
+	}
+
+	// ── Fixed footer ──
 	b.WriteString("\n")
 	b.WriteString("For more help: https://code.claude.com/docs/en/overview")
 	b.WriteString("\n\n")
-	b.WriteString(helpFooterStyle.Render("esc to close"))
+	hint := "esc to close"
+	if needsScroll {
+		hint = "↑↓/jk to scroll  esc to close"
+	}
+	b.WriteString(helpFooterStyle.Render(hint))
 
 	return b.String()
 }

@@ -108,7 +108,8 @@ type model struct {
 	completionBase string   // the original typed text (without leading /)
 
 	// Help screen state.
-	helpTab int // 0=general, 1=commands, 2=custom-commands
+	helpTab       int // 0=general, 1=commands, 2=custom-commands
+	helpScrollOff int // scroll offset (first visible line of tab content)
 
 	// Fast mode toggle.
 	fastMode bool
@@ -419,6 +420,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '?' {
 				if strings.TrimSpace(m.textInput.Value()) == "" {
 					m.helpTab = 0
+					m.helpScrollOff = 0
 					m.mode = modeHelp
 					m.textInput.Blur()
 					return m, nil
@@ -485,6 +487,7 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 		if cmdName == "help" {
 			m.helpTab = 0
+			m.helpScrollOff = 0
 			m.mode = modeHelp
 			m.textInput.Blur()
 			return m, tea.Batch(cmds...)
