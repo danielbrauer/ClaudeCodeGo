@@ -13,44 +13,53 @@ import (
 
 // BuildSystemPrompt assembles the system prompt blocks from CLAUDE.md files,
 // environment context, settings, and active skill content.
+//
+// The prompt is split into two blocks for prompt caching efficiency:
+//   - Block 1: Core identity and environment (stable across projects/sessions)
+//   - Block 2: Project-specific content (CLAUDE.md, skills, permissions)
+//
+// Cache control headers are applied separately by the caching layer.
 func BuildSystemPrompt(cwd string, settings *config.Settings, skillContent string) []api.SystemBlock {
-	var parts []string
-
-	// Core identity.
-	parts = append(parts, "You are Claude Code, an interactive CLI tool that helps users with software engineering tasks.")
-	parts = append(parts, "You have access to tools that let you read files, write files, execute commands, and more.")
-
-	// Environment info.
-	parts = append(parts, fmt.Sprintf(
+	// Block 1: Core identity + environment (mostly static).
+	var identityParts []string
+	identityParts = append(identityParts, "You are Claude Code, an interactive CLI tool that helps users with software engineering tasks.")
+	identityParts = append(identityParts, "You have access to tools that let you read files, write files, execute commands, and more.")
+	identityParts = append(identityParts, fmt.Sprintf(
 		"\nEnvironment:\n- Working directory: %s\n- Platform: %s/%s\n- Date: %s",
 		cwd, runtime.GOOS, runtime.GOARCH, time.Now().Format("2006-01-02"),
 	))
 
-	// Load CLAUDE.md content using the enhanced loader.
+	blocks := []api.SystemBlock{
+		{Type: "text", Text: strings.Join(identityParts, "\n")},
+	}
+
+	// Block 2: Project-specific content (CLAUDE.md, skills, permissions).
+	var projectParts []string
+
 	claudeMDContent := config.LoadClaudeMD(cwd)
 	if claudeMDContent != "" {
-		parts = append(parts, "\n# Project Instructions (CLAUDE.md)\n\n"+claudeMDContent)
+		projectParts = append(projectParts, "# Project Instructions (CLAUDE.md)\n\n"+claudeMDContent)
 	}
 
-	// Phase 7: Inject skill instructions.
 	if skillContent != "" {
-		parts = append(parts, "\n# Active Skills\n\n"+skillContent)
+		projectParts = append(projectParts, "# Active Skills\n\n"+skillContent)
 	}
 
-	// Inject permission rule summary if any rules are configured.
 	if settings != nil && len(settings.Permissions) > 0 {
 		rulesSummary := formatPermissionRules(settings.Permissions)
 		if rulesSummary != "" {
-			parts = append(parts, "\n# Permission Rules\n\n"+rulesSummary)
+			projectParts = append(projectParts, "# Permission Rules\n\n"+rulesSummary)
 		}
 	}
 
-	return []api.SystemBlock{
-		{
+	if len(projectParts) > 0 {
+		blocks = append(blocks, api.SystemBlock{
 			Type: "text",
-			Text: strings.Join(parts, "\n"),
-		},
+			Text: strings.Join(projectParts, "\n\n"),
+		})
 	}
+
+	return blocks
 }
 
 // formatPermissionRules creates a human-readable summary of permission rules
