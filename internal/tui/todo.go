@@ -3,30 +3,41 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/anthropics/claude-code-go/internal/tools"
 )
 
 // renderTodoList produces the styled todo list for the live region.
+//
+// Each line is styled as a single unit (one lipgloss.Render call) rather than
+// styling the icon and text separately. This produces one set of ANSI escape
+// sequences per line instead of two, which prevents Bubble Tea's inline
+// renderer from miscalculating physical line widths during repaints.
 func renderTodoList(todos []tools.TodoItem) string {
 	if len(todos) == 0 {
 		return ""
 	}
 
-	var b strings.Builder
+	lines := make([]string, 0, len(todos))
 	for _, item := range todos {
-		var icon, line string
+		var icon, text string
+		var style lipgloss.Style
 		switch item.Status {
 		case "in_progress":
-			icon = todoInProgressStyle.Render("[~]")
-			line = todoInProgressStyle.Render(item.ActiveForm)
+			icon = "[~]"
+			text = item.ActiveForm
+			style = todoInProgressStyle
 		case "completed":
-			icon = todoCompletedStyle.Render("[x]")
-			line = todoCompletedStyle.Render(item.Content)
+			icon = "[x]"
+			text = item.Content
+			style = todoCompletedStyle
 		default: // pending
-			icon = todoPendingStyle.Render("[ ]")
-			line = todoPendingStyle.Render(item.Content)
+			icon = "[ ]"
+			text = item.Content
+			style = todoPendingStyle
 		}
-		b.WriteString("  " + icon + " " + line + "\n")
+		lines = append(lines, style.Render("  "+icon+" "+text))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.Join(lines, "\n")
 }
