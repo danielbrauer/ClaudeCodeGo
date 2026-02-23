@@ -16,7 +16,7 @@ func TestStoreRoundTrip(t *testing.T) {
 
 	sess := &Session{
 		ID:        "test-123",
-		Model:     "claude-sonnet-4-20250514",
+		Model:     "claude-sonnet-4-6",
 		CWD:       "/tmp/test",
 		Messages:  []api.Message{api.NewTextMessage("user", "hello")},
 		CreatedAt: time.Now(),
