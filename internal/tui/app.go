@@ -124,19 +124,27 @@ func (a *App) Run(ctx context.Context) error {
 	permHandler := NewTUIPermissionHandler(p, a.cfg.RuleHandler)
 	a.cfg.Loop.SetPermissionHandler(permHandler)
 
-	// Print the banner to scrollback before starting (matches JS version layout).
+	// Print the banner to scrollback before starting (matches JS CLI layout).
 	modelDisplay := api.ModelDisplayName(a.cfg.Model)
-	fmt.Println()
-	fmt.Printf("\033[1m✻ Claude Code\033[0m v%s\n", a.cfg.Version)
-	if a.cfg.BillingType != "" {
-		fmt.Printf("  %s · %s\n", modelDisplay, a.cfg.BillingType)
-	} else {
-		fmt.Printf("  %s\n", modelDisplay)
-	}
 	cwdDisplay := shortenPath(a.cfg.Cwd)
-	if cwdDisplay != "" {
-		fmt.Printf("  %s\n", cwdDisplay)
+
+	// Build the right-hand info lines next to the mascot.
+	line1 := fmt.Sprintf("\033[1mClaude Code\033[0m v%s", a.cfg.Version)
+	var line2 string
+	if a.cfg.BillingType != "" {
+		line2 = fmt.Sprintf("%s · %s", modelDisplay, a.cfg.BillingType)
+	} else {
+		line2 = modelDisplay
 	}
+	line3 := cwdDisplay
+
+	// Orange mascot (▗ ▗  ▖ ▖ / ▘▘ ▝▝) with info beside it.
+	orange := "\033[38;5;215m" // light orange
+	reset := "\033[0m"
+	fmt.Println()
+	fmt.Printf("%s▗ ▗   ▖ ▖%s  %s\n", orange, reset, line1)
+	fmt.Printf("           %s\n", line2)
+	fmt.Printf("%s  ▘▘ ▝▝%s    %s\n", orange, reset, line3)
 	fmt.Println()
 
 	// Run the BT event loop (blocks until quit).
