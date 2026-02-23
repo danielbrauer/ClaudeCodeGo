@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/config"
 )
 
@@ -486,6 +487,21 @@ func (m model) closeConfigPanel() (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Println(strings.TrimRight(summary, "\n")))
 		} else {
 			cmds = append(cmds, tea.Println(configSearchStyle.Render("Config dialog dismissed")))
+		}
+
+		// Sync fast mode from settings to the model and conversation loop.
+		// The config panel mutates m.settings directly; we need to propagate
+		// those changes to the in-memory state that controls API requests,
+		// mirroring what the /fast slash command does.
+		newFast := config.BoolVal(m.settings.FastMode, false)
+		if newFast != m.fastMode {
+			m.fastMode = newFast
+			m.loop.SetFastMode(newFast)
+			if newFast && !api.IsOpus46Model(m.modelName) {
+				resolved := api.ModelAliases[api.FastModeModelAlias]
+				m.modelName = resolved
+				m.loop.SetModel(resolved)
+			}
 		}
 	}
 
