@@ -214,8 +214,25 @@ func TestQueueing_ViewShowsInputDuringStreaming(t *testing.T) {
 	view := m.View()
 
 	// Should show the input borders and hint.
-	if !strings.Contains(view, "Enter to queue message") {
+	if !strings.Contains(view, "enter to queue") {
 		t.Fatalf("expected queue hint in view, got:\n%s", view)
+	}
+}
+
+func TestQueueing_ViewShowsInputWhenEmptyDuringStreaming(t *testing.T) {
+	m, _ := testModel(t)
+
+	// Streaming mode with empty input — input area should still be visible.
+	m.mode = modeStreaming
+
+	view := m.View()
+
+	// Should show the input area with interrupt hint even when input is empty.
+	if !strings.Contains(view, "esc to interrupt") {
+		t.Fatalf("expected interrupt hint in view during streaming, got:\n%s", view)
+	}
+	if !strings.Contains(view, "enter to queue") {
+		t.Fatalf("expected queue hint in view during streaming, got:\n%s", view)
 	}
 }
 

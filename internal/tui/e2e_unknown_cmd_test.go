@@ -50,8 +50,8 @@ func TestE2E_RegularMessage_SentToLoop(t *testing.T) {
 	if result.mode != modeStreaming {
 		t.Errorf("mode = %d, want modeStreaming (%d)", result.mode, modeStreaming)
 	}
-	if result.textInput.Focused() {
-		t.Error("text input should be blurred during streaming")
+	if !result.textInput.Focused() {
+		t.Error("text input should stay focused during streaming for message queuing")
 	}
 }
 

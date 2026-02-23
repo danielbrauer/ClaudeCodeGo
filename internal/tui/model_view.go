@@ -96,7 +96,7 @@ func (m model) View() string {
 	}
 
 	// Input area with borders.
-	if m.mode == modeInput || (m.mode == modeStreaming && m.textInput.Value() != "") {
+	if m.mode == modeInput || m.mode == modeStreaming {
 		b.WriteString(m.renderInputArea())
 	}
 
@@ -142,9 +142,9 @@ func (m model) renderInputArea() string {
 		} else {
 			m.textInput.Placeholder = ""
 		}
-	} else {
+	} else if m.mode == modeStreaming {
 		// Streaming mode — show a hint that input will be queued.
-		m.textInput.Placeholder = ""
+		m.textInput.Placeholder = "Type a message to queue..."
 	}
 
 	b.WriteString(m.textInput.View())
@@ -154,8 +154,21 @@ func (m model) renderInputArea() string {
 	b.WriteString(renderInputBorder(m.width))
 	b.WriteString("\n")
 
-	// Hints line below the input area (centralised in hints.go).
-	if hint := m.inputAreaHint(); hint != "" {
+	// Hints line: show suggestion accept hint when a dynamic suggestion
+	// is visible, otherwise show "? for shortcuts" only when input is empty.
+	if m.mode == modeInput && len(m.completions) == 0 {
+		if m.dynSuggestion != "" && m.textInput.Value() == "" {
+			b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
+			b.WriteString("\n")
+		} else if strings.TrimSpace(m.textInput.Value()) == "" {
+			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
+			b.WriteString("\n")
+		}
+	} else if m.mode == modeStreaming {
+		hint := "esc to interrupt · enter to queue"
+		if m.queue.Len() > 0 {
+			hint += fmt.Sprintf(" · %d message%s queued", m.queue.Len(), pluralS(m.queue.Len()))
+		}
 		b.WriteString("  " + shortcutsHintStyle.Render(hint))
 		b.WriteString("\n")
 	}
