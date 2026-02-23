@@ -121,6 +121,10 @@ type model struct {
 	promptSuggestion string // cached suggestion text (e.g., `Try "edit app.go to..."`)
 	submitCount      int    // number of user messages sent in the session
 
+	// Dynamic prompt suggestion (generated after each turn via API).
+	dynSuggestion          string // suggested next prompt text (shown as placeholder)
+	dynSuggestionGenerating bool  // true while an API call is in-flight
+
 	// Status line (custom command-based status bar).
 	statusLineText string // last output from the status line command
 
@@ -305,11 +309,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		m.activeTool = ""
 		m.textInput.Focus()
+		// Clear any previous dynamic suggestion.
+		m.dynSuggestion = ""
 		// Refresh the custom status line after each assistant turn.
 		if cmd := m.refreshStatusLine(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		// Generate a dynamic prompt suggestion for the next turn.
+		if m.apiClient != nil && msg.Err == nil && m.ctx.Err() == nil {
+			m.dynSuggestionGenerating = true
+			msgs := m.loop.History().Messages()
+			// Copy messages to avoid races with the main loop.
+			msgsCopy := make([]api.Message, len(msgs))
+			copy(msgsCopy, msgs)
+			cmds = append(cmds, generatePromptSuggestionCmd(m.ctx, m.apiClient, msgsCopy))
+		}
 		return m, tea.Batch(append(cmds, textarea.Blink)...)
+
+	case promptSuggestionResult:
+		m.dynSuggestionGenerating = false
+		m.dynSuggestion = msg.text
+		return m, nil
 
 	// ── Memory edit done ──
 	case MemoryEditDoneMsg:
@@ -415,6 +435,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyTab:
+			// If the input is empty and we have a dynamic suggestion,
+			// accept it by filling it into the text input.
+			if strings.TrimSpace(m.textInput.Value()) == "" && m.dynSuggestion != "" {
+				m.textInput.SetValue(m.dynSuggestion)
+				m.textInput.CursorEnd()
+				return m, nil
+			}
 			return m.handleTabComplete()
 
 		case tea.KeyShiftTab:
@@ -425,14 +452,28 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.clearCompletions()
 				return m, nil
 			}
+			// Escape clears the dynamic suggestion.
+			if m.dynSuggestion != "" {
+				m.dynSuggestion = ""
+				return m, nil
+			}
 			return m, nil
 
 		case tea.KeyEnter:
 			m.clearCompletions()
 			text := strings.TrimSpace(m.textInput.Value())
+			// If input is empty but we have a dynamic suggestion,
+			// submit the suggestion directly.
+			if text == "" && m.dynSuggestion != "" {
+				text = m.dynSuggestion
+				m.dynSuggestion = ""
+				m.textInput.Reset()
+				return m.handleSubmit(text)
+			}
 			if text == "" {
 				return m, nil
 			}
+			m.dynSuggestion = "" // clear suggestion on any submit
 			m.textInput.Reset()
 			return m.handleSubmit(text)
 
@@ -452,6 +493,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Clear completions when the user types — they'll re-trigger on Tab.
 			if len(m.completions) > 0 {
 				m.clearCompletions()
+			}
+			// Clear the dynamic suggestion once the user starts typing
+			// their own text.
+			if m.dynSuggestion != "" && m.textInput.Value() != "" {
+				m.dynSuggestion = ""
 			}
 			return m, cmd
 		}
@@ -1102,10 +1148,17 @@ func (m model) View() string {
 		b.WriteString(renderInputBorder(m.width))
 		b.WriteString("\n")
 
-		// Set placeholder dynamically: show suggestion only when the
-		// conversation is empty and the input field is blank.
-		if m.submitCount < 1 && m.textInput.Value() == "" {
-			m.textInput.Placeholder = m.promptSuggestion
+		// Set placeholder dynamically: show a suggestion when the input
+		// field is blank. Before the first submit, show a random template
+		// suggestion. After turns, show the API-generated dynamic suggestion.
+		if m.textInput.Value() == "" {
+			if m.dynSuggestion != "" {
+				m.textInput.Placeholder = m.dynSuggestion
+			} else if m.submitCount < 1 {
+				m.textInput.Placeholder = m.promptSuggestion
+			} else {
+				m.textInput.Placeholder = ""
+			}
 		} else {
 			m.textInput.Placeholder = ""
 		}
@@ -1117,11 +1170,16 @@ func (m model) View() string {
 		b.WriteString(renderInputBorder(m.width))
 		b.WriteString("\n")
 
-		// Hints line: "? for shortcuts" (dimmed), shown when no completions
-		// are visible and no other state overrides it.
+		// Hints line: show suggestion accept hint when a suggestion is
+		// visible, otherwise show "? for shortcuts".
 		if len(m.completions) == 0 {
-			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
-			b.WriteString("\n")
+			if m.dynSuggestion != "" && m.textInput.Value() == "" {
+				b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
+				b.WriteString("\n")
+			} else {
+				b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
+				b.WriteString("\n")
+			}
 		}
 	}
 
