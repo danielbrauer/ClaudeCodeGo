@@ -136,7 +136,7 @@ func main() {
 	skillContent := skills.ActiveSkillContent(loadedSkills)
 
 	// Resolve model: CLI flag > settings > default.
-	model := api.ModelClaude46Sonnet
+	model := api.ModelClaude46Opus
 	if settings.Model != "" {
 		model = api.ResolveModelAlias(settings.Model)
 	}
