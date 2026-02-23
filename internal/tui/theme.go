@@ -84,4 +84,23 @@ var (
 
 	resumeIDStyle = lipgloss.NewStyle().
 			Foreground(colorPurple)
+
+	// Diff dialog styles.
+	diffTitleStyle = lipgloss.NewStyle().
+			Foreground(colorWhite).
+			Bold(true)
+
+	diffDimStyle = lipgloss.NewStyle().
+			Foreground(colorDim)
+
+	diffSelectedStyle = lipgloss.NewStyle().
+				Foreground(colorPurple).
+				Bold(true)
+
+	diffFileHeaderStyle = lipgloss.NewStyle().
+				Foreground(colorWhite).
+				Bold(true)
+
+	diffHunkHeaderStyle = lipgloss.NewStyle().
+				Foreground(colorCyan)
 )

@@ -93,8 +93,8 @@ func (a *App) Run(ctx context.Context) error {
 		width,
 		a.cfg.MCPManager,
 		a.cfg.Skills,
-		a.cfg.Session,
 		a.cfg.SessStore,
+		a.cfg.Session,
 		a.cfg.OnModelSwitch,
 		a.cfg.LogoutFunc,
 	)

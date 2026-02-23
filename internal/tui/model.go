@@ -28,7 +28,8 @@ const (
 	modePermission               // waiting for permission y/n
 	modeAskUser                  // waiting for ask-user response
 	modeResume                   // session picker for /resume
-	modeModelPicker                // choosing a model via /model
+	modeModelPicker              // choosing a model via /model
+	modeDiff                     // viewing diff dialog
 )
 
 // model is the Bubble Tea model for the TUI.
@@ -40,10 +41,6 @@ type model struct {
 	modelName string
 	version   string
 	mcpStatus MCPStatus // MCP manager for /mcp command; may be nil
-
-	// Session management (for /clear).
-	session   *session.Session
-	sessStore *session.Store
 
 	// UI state.
 	mode          uiMode
@@ -88,9 +85,14 @@ type model struct {
 	// Resume session picker state.
 	resumeSessions []*session.Session // loaded session list for picker
 	resumeCursor   int                // selected index in session list
-  
+
 	// Auth callbacks.
 	logoutFunc func() error // Clears credentials; nil if not available.
+
+	// Diff dialog state.
+	diffData     *diffData
+	diffSelected int    // selected file index
+	diffViewMode string // "list" or "detail"
 
 	// Initial prompt to send on start.
 	initialPrompt string
@@ -134,8 +136,6 @@ func newModel(
 		modelName:     modelName,
 		version:       version,
 		mcpStatus:     mcpStatus,
-		session:       sess,
-		sessStore:     sessStore,
 		onModelSwitch: onModelSwitch,
 		mode:          modeInput,
 		width:         width,
@@ -288,6 +288,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeAskUser
 		return m, nil
 
+	// ── Diff dialog loaded ──
+	case DiffLoadedMsg:
+		m.diffData = &msg.Data
+		m.diffSelected = 0
+		m.diffViewMode = "list"
+		m.mode = modeDiff
+		return m, nil
+
 	// ── Spinner tick ──
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -320,6 +328,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case modeModelPicker:
 		return m.handleModelPickerKey(msg)
+
+	case modeDiff:
+		return m.handleDiffKey(msg)
 
 	case modeStreaming:
 		// Ctrl+C during streaming cancels the loop.
@@ -535,6 +546,35 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 			return m.handleModelCommand(parts)
 		}
 
+		if cmdName == "diff" {
+			m.mode = modeDiff
+			m.diffData = nil
+			return m, tea.Batch(
+				func() tea.Msg {
+					data := loadDiffData()
+					return DiffLoadedMsg{Data: data}
+				},
+				m.spinner.Tick,
+			)
+		}
+
+		if cmdName == "review" {
+			// Extract optional argument (PR number).
+			arg := ""
+			if len(parts) > 1 {
+				arg = strings.TrimSpace(parts[1])
+			}
+			reviewPrompt := buildReviewPrompt(arg)
+			m.mode = modeStreaming
+			m.textInput.Blur()
+			loopCmd := func() tea.Msg {
+				err := m.loop.SendMessage(m.ctx, reviewPrompt)
+				return LoopDoneMsg{Err: err}
+			}
+			cmds = append(cmds, loopCmd, m.spinner.Tick)
+			return m, tea.Batch(cmds...)
+		}
+
 		if cmd, ok := m.slashReg.lookup(cmdName); ok && cmd.Execute != nil {
 			output := cmd.Execute(&m)
 			// Phase 7: Skill slash commands return a sentinel prefix.
@@ -707,6 +747,58 @@ func (m model) advanceAskUser() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleDiffKey processes key events in the diff dialog.
+func (m model) handleDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.diffData == nil {
+		m.mode = modeInput
+		m.textInput.Focus()
+		return m, textarea.Blink
+	}
+
+	switch msg.Type {
+	case tea.KeyEscape, tea.KeyCtrlC:
+		// Close diff dialog.
+		m.diffData = nil
+		m.mode = modeInput
+		m.textInput.Focus()
+		return m, textarea.Blink
+
+	case tea.KeyUp:
+		if m.diffViewMode == "list" && m.diffSelected > 0 {
+			m.diffSelected--
+		}
+		return m, nil
+
+	case tea.KeyDown:
+		if m.diffViewMode == "list" && m.diffSelected < len(m.diffData.files)-1 {
+			m.diffSelected++
+		}
+		return m, nil
+
+	case tea.KeyEnter:
+		if m.diffViewMode == "list" && m.diffSelected < len(m.diffData.files) {
+			m.diffViewMode = "detail"
+		}
+		return m, nil
+
+	case tea.KeyLeft:
+		if m.diffViewMode == "detail" {
+			m.diffViewMode = "list"
+		}
+		return m, nil
+
+	default:
+		// Also handle 'q' to close.
+		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'q' {
+			m.diffData = nil
+			m.mode = modeInput
+			m.textInput.Focus()
+			return m, textarea.Blink
+		}
+		return m, nil
+	}
+}
+
 // View renders the live region of the TUI.
 func (m model) View() string {
 	if m.quitting {
@@ -714,6 +806,18 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
+
+	// 0. Diff dialog (takes over the entire view).
+	if m.mode == modeDiff && m.diffData != nil {
+		b.WriteString(renderDiffView(m.diffData, m.diffSelected, m.diffViewMode, m.width))
+		return b.String()
+	}
+
+	// Also show a loading indicator while diff is loading.
+	if m.mode == modeDiff && m.diffData == nil {
+		b.WriteString(m.spinner.View() + " Loading diff...\n")
+		return b.String()
+	}
 
 	// 1. Streaming text (during API response).
 	if m.streamingText != "" {
