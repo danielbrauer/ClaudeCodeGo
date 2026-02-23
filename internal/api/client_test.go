@@ -455,6 +455,131 @@ func TestClient_FastModeBetaHeader(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// Adaptive thinking beta header
+// ===========================================================================
+
+func TestClient_AdaptiveThinkingBetaHeader(t *testing.T) {
+	var capturedBeta string
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("Anthropic-Beta")
+		// Also capture the request body to verify thinking field.
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		capturedBody = body
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		&staticTokenSource{token: "tok"},
+		WithBaseURL(server.URL),
+	)
+
+	// Request with adaptive thinking should include the beta header.
+	client.CreateMessageStream(context.Background(), &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Thinking: ThinkingAdaptive(),
+	}, &testHandler{})
+
+	if !strings.Contains(capturedBeta, AdaptiveThinkingBeta) {
+		t.Errorf("beta header should contain %q, got %q", AdaptiveThinkingBeta, capturedBeta)
+	}
+	// Should still contain the base betas.
+	if !strings.Contains(capturedBeta, "claude-code-20250219") {
+		t.Errorf("beta header should contain claude-code-20250219, got %q", capturedBeta)
+	}
+
+	// Verify the thinking field is in the request body.
+	thinking, ok := capturedBody["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("thinking field missing or wrong type in request body: %v", capturedBody["thinking"])
+	}
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type = %v, want 'adaptive'", thinking["type"])
+	}
+}
+
+func TestClient_EnabledThinkingNoBetaHeader(t *testing.T) {
+	var capturedBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("Anthropic-Beta")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		&staticTokenSource{token: "tok"},
+		WithBaseURL(server.URL),
+	)
+
+	// Request with budget-based thinking (not adaptive) should NOT include the adaptive beta.
+	client.CreateMessageStream(context.Background(), &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Thinking: ThinkingEnabled(8000),
+	}, &testHandler{})
+
+	if strings.Contains(capturedBeta, AdaptiveThinkingBeta) {
+		t.Errorf("beta header should NOT contain %q for enabled (non-adaptive) thinking, got %q", AdaptiveThinkingBeta, capturedBeta)
+	}
+}
+
+func TestClient_NoThinkingBetaWithoutThinking(t *testing.T) {
+	var capturedBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("Anthropic-Beta")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		&staticTokenSource{token: "tok"},
+		WithBaseURL(server.URL),
+	)
+
+	// Request without any thinking should NOT include the adaptive beta.
+	client.CreateMessageStream(context.Background(), &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+	}, &testHandler{})
+
+	if strings.Contains(capturedBeta, AdaptiveThinkingBeta) {
+		t.Errorf("beta header should NOT contain %q without thinking, got %q", AdaptiveThinkingBeta, capturedBeta)
+	}
+}
+
+func TestClient_FastModeAndThinkingBetas(t *testing.T) {
+	var capturedBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("Anthropic-Beta")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		&staticTokenSource{token: "tok"},
+		WithBaseURL(server.URL),
+	)
+
+	// Request with both fast mode and adaptive thinking should include both betas.
+	client.CreateMessageStream(context.Background(), &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Speed:    "fast",
+		Thinking: ThinkingAdaptive(),
+	}, &testHandler{})
+
+	if !strings.Contains(capturedBeta, FastModeBeta) {
+		t.Errorf("beta header should contain %q, got %q", FastModeBeta, capturedBeta)
+	}
+	if !strings.Contains(capturedBeta, AdaptiveThinkingBeta) {
+		t.Errorf("beta header should contain %q, got %q", AdaptiveThinkingBeta, capturedBeta)
+	}
+}
+
 func TestClient_NoFastModeBetaWithoutSpeed(t *testing.T) {
 	var capturedBeta string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

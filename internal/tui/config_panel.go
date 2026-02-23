@@ -83,7 +83,7 @@ func snapshotSettings(s *config.Settings) *config.Settings {
 func (cp *configPanel) buildItems() []configSetting {
 	return []configSetting{
 		{id: "autoCompactEnabled", label: "Auto-compact", typ: configBool},
-		{id: "thinkingEnabled", label: "Thinking mode", typ: configBool},
+		{id: "alwaysThinkingEnabled", label: "Thinking mode", typ: configBool},
 		{id: "fastMode", label: "Fast mode", typ: configBool},
 		{id: "verbose", label: "Verbose output", typ: configBool},
 		{id: "respectGitignore", label: "Respect .gitignore", typ: configBool},
@@ -127,8 +127,8 @@ func (cp *configPanel) getValue(item configSetting) string {
 	switch item.id {
 	case "autoCompactEnabled":
 		return fmt.Sprintf("%v", config.BoolVal(s.AutoCompactEnabled, true))
-	case "thinkingEnabled":
-		return fmt.Sprintf("%v", config.BoolVal(s.ThinkingEnabled, false))
+	case "alwaysThinkingEnabled":
+		return fmt.Sprintf("%v", config.BoolVal(s.ThinkingEnabled, true))
 	case "fastMode":
 		return fmt.Sprintf("%v", config.BoolVal(s.FastMode, false))
 	case "verbose":
@@ -184,9 +184,9 @@ func (cp *configPanel) toggleBool(id string, s *config.Settings) {
 	case "autoCompactEnabled":
 		ptr = &s.AutoCompactEnabled
 		def = true
-	case "thinkingEnabled":
+	case "alwaysThinkingEnabled":
 		ptr = &s.ThinkingEnabled
-		def = false
+		def = true
 	case "fastMode":
 		ptr = &s.FastMode
 		def = false
@@ -204,8 +204,13 @@ func (cp *configPanel) toggleBool(id string, s *config.Settings) {
 	newVal := !current
 	*ptr = config.BoolPtr(newVal)
 
-	// Persist to disk.
-	_ = config.SaveUserSetting(id, newVal)
+	// Persist to disk. The JS CLI saves `undefined` (removes the key) when
+	// a boolean matches its default, so we do the same for interoperability.
+	if newVal == def {
+		_ = config.SaveUserSetting(id, nil)
+	} else {
+		_ = config.SaveUserSetting(id, newVal)
+	}
 }
 
 func (cp *configPanel) cycleEnum(id string, options []string, s *config.Settings) {
@@ -274,7 +279,7 @@ func (cp *configPanel) buildChangeSummary() []string {
 	i := cp.initial
 
 	checkBool("auto-compact", i.AutoCompactEnabled, s.AutoCompactEnabled, true)
-	checkBool("thinking mode", i.ThinkingEnabled, s.ThinkingEnabled, false)
+	checkBool("thinking mode", i.ThinkingEnabled, s.ThinkingEnabled, true)
 	checkBool("fast mode", i.FastMode, s.FastMode, false)
 	checkBool("verbose output", i.Verbose, s.Verbose, false)
 	checkBool("respect .gitignore", i.RespectGitignore, s.RespectGitignore, true)
@@ -487,6 +492,12 @@ func (m model) closeConfigPanel() (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Println(strings.TrimRight(summary, "\n")))
 		} else {
 			cmds = append(cmds, tea.Println(configSearchStyle.Render("Config dialog dismissed")))
+		}
+
+		// Sync thinking mode from settings to the conversation loop.
+		newThinking := config.BoolVal(m.settings.ThinkingEnabled, true)
+		if newThinking != m.loop.ThinkingEnabled() {
+			m.loop.SetThinkingEnabled(newThinking)
 		}
 
 		// Sync fast mode from settings to the model and conversation loop.

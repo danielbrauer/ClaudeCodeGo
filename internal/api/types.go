@@ -23,6 +23,9 @@ const FastModeDisplayName = "Opus 4.6"
 // FastModeBeta is the beta header value required for fast mode.
 const FastModeBeta = "fast-mode-2026-02-01"
 
+// AdaptiveThinkingBeta is the beta header for adaptive thinking.
+const AdaptiveThinkingBeta = "adaptive-thinking-2026-01-28"
+
 // Friendly model name mapping.
 var ModelAliases = map[string]string{
 	"opus":   ModelClaude46Opus,
@@ -70,6 +73,20 @@ func IsOpus46Model(model string) bool {
 	return strings.Contains(strings.ToLower(model), "opus-4-6")
 }
 
+// SupportsAdaptiveThinking returns true if the model supports the adaptive
+// thinking type (Opus 4.6 and Sonnet 4.6).
+func SupportsAdaptiveThinking(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "opus-4-6") || strings.Contains(m, "sonnet-4-6")
+}
+
+// SupportsThinking returns true if the model supports extended thinking at all
+// (Claude 4+ models).
+func SupportsThinking(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "sonnet-4") || strings.Contains(m, "opus-4")
+}
+
 // Role constants for messages.
 const (
 	RoleUser      = "user"
@@ -92,6 +109,28 @@ const (
 	StopReasonStopSeq   = "stop_sequence"
 )
 
+// ThinkingConfig controls extended thinking in the API request.
+// Use ThinkingAdaptive(), ThinkingEnabled(), or ThinkingDisabled() to create.
+type ThinkingConfig struct {
+	Type         string `json:"type"`                    // "adaptive", "enabled", or "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // required for type "enabled"
+}
+
+// ThinkingAdaptive returns an adaptive thinking config (Opus 4.6 / Sonnet 4.6).
+func ThinkingAdaptive() *ThinkingConfig {
+	return &ThinkingConfig{Type: "adaptive"}
+}
+
+// ThinkingEnabled returns a budget-based thinking config for older models.
+func ThinkingEnabled(budgetTokens int) *ThinkingConfig {
+	return &ThinkingConfig{Type: "enabled", BudgetTokens: budgetTokens}
+}
+
+// ThinkingDisabled returns a disabled thinking config.
+func ThinkingDisabled() *ThinkingConfig {
+	return &ThinkingConfig{Type: "disabled"}
+}
+
 // CreateMessageRequest is the request body for POST /v1/messages.
 type CreateMessageRequest struct {
 	Model     string            `json:"model"`
@@ -105,7 +144,8 @@ type CreateMessageRequest struct {
 	Temp      *float64          `json:"temperature,omitempty"`
 	TopP      *float64          `json:"top_p,omitempty"`
 	TopK      *int              `json:"top_k,omitempty"`
-	Speed string `json:"speed,omitempty"`
+	Thinking  *ThinkingConfig   `json:"thinking,omitempty"`
+	Speed     string            `json:"speed,omitempty"`
 }
 
 // RequestMetadata holds metadata sent with API requests.

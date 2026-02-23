@@ -26,7 +26,7 @@ type Settings struct {
 	// User-facing preferences (displayed in the config panel).
 	AutoCompactEnabled  *bool  `json:"autoCompactEnabled,omitempty"`
 	Verbose             *bool  `json:"verbose,omitempty"`
-	ThinkingEnabled     *bool  `json:"thinkingEnabled,omitempty"`
+	ThinkingEnabled     *bool  `json:"alwaysThinkingEnabled,omitempty"`
 	EditorMode          string `json:"editorMode,omitempty"`   // "normal" or "vim"
 	DiffTool            string `json:"diffTool,omitempty"`     // "terminal" or "auto"
 	NotifChannel        string `json:"notifChannel,omitempty"` // "auto", "terminal_bell", "iterm2", etc.
@@ -66,7 +66,7 @@ type rawSettings struct {
 	// User-facing preferences.
 	AutoCompactEnabled *bool  `json:"autoCompactEnabled,omitempty"`
 	Verbose            *bool  `json:"verbose,omitempty"`
-	ThinkingEnabled    *bool  `json:"thinkingEnabled,omitempty"`
+	ThinkingEnabled    *bool  `json:"alwaysThinkingEnabled,omitempty"`
 	EditorMode         string `json:"editorMode,omitempty"`
 	DiffTool           string `json:"diffTool,omitempty"`
 	NotifChannel       string `json:"notifChannel,omitempty"`
@@ -455,7 +455,12 @@ func SaveUserSetting(key string, value interface{}) error {
 		}
 	}
 
-	settings[key] = value
+	// nil means "remove the key" (matches JS CLI behavior of saving undefined).
+	if value == nil {
+		delete(settings, key)
+	} else {
+		settings[key] = value
+	}
 
 	output, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {

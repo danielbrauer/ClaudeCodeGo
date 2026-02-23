@@ -602,6 +602,134 @@ func TestLoadSettingsFastModeProjectOverride(t *testing.T) {
 	}
 }
 
+func TestThinkingEnabledSerialization(t *testing.T) {
+	// Test that ThinkingEnabled uses "alwaysThinkingEnabled" JSON key
+	// for compatibility with the official JS CLI.
+	s := &Settings{
+		Model:           "opus",
+		ThinkingEnabled: BoolPtr(false),
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	// Should use the JS-compatible key name.
+	if !strings.Contains(string(data), `"alwaysThinkingEnabled"`) {
+		t.Errorf("JSON should contain 'alwaysThinkingEnabled', got: %s", data)
+	}
+	if strings.Contains(string(data), `"thinkingEnabled"`) {
+		t.Errorf("JSON should NOT contain 'thinkingEnabled' (old key), got: %s", data)
+	}
+
+	// nil ThinkingEnabled should be omitted from JSON.
+	s2 := &Settings{Model: "sonnet"}
+	data2, _ := json.Marshal(s2)
+	if strings.Contains(string(data2), "alwaysThinkingEnabled") {
+		t.Errorf("nil ThinkingEnabled should be omitted from JSON, got: %s", data2)
+	}
+
+	// Round-trip: JSON → Go should deserialize correctly.
+	jsonIn := []byte(`{"model":"opus","alwaysThinkingEnabled":false}`)
+	var s3 Settings
+	if err := json.Unmarshal(jsonIn, &s3); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if s3.ThinkingEnabled == nil || *s3.ThinkingEnabled != false {
+		t.Errorf("ThinkingEnabled = %v, want false", s3.ThinkingEnabled)
+	}
+}
+
+func TestLoadSettingsThinkingEnabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+	// Use the JS-compatible key name in the settings file.
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{
+		"alwaysThinkingEnabled": false
+	}`), 0644)
+
+	settings, err := LoadSettings(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+
+	if settings.ThinkingEnabled == nil || *settings.ThinkingEnabled != false {
+		t.Errorf("ThinkingEnabled = %v, want false", settings.ThinkingEnabled)
+	}
+}
+
+func TestMergeSettingsThinkingEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    *bool
+		overlay *bool
+		wantNil bool
+		wantVal bool
+	}{
+		{"both nil", nil, nil, true, false},
+		{"base set, overlay nil", BoolPtr(true), nil, false, true},
+		{"base nil, overlay set", nil, BoolPtr(false), false, false},
+		{"overlay overrides true→false", BoolPtr(true), BoolPtr(false), false, false},
+		{"overlay overrides false→true", BoolPtr(false), BoolPtr(true), false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := &Settings{ThinkingEnabled: tt.base}
+			overlay := &Settings{ThinkingEnabled: tt.overlay}
+			result := mergeSettings(base, overlay)
+
+			if tt.wantNil {
+				if result.ThinkingEnabled != nil {
+					t.Errorf("ThinkingEnabled = %v, want nil", *result.ThinkingEnabled)
+				}
+			} else {
+				if result.ThinkingEnabled == nil {
+					t.Fatalf("ThinkingEnabled is nil, want %v", tt.wantVal)
+				}
+				if *result.ThinkingEnabled != tt.wantVal {
+					t.Errorf("ThinkingEnabled = %v, want %v", *result.ThinkingEnabled, tt.wantVal)
+				}
+			}
+		})
+	}
+}
+
+func TestSaveUserSetting_NilRemovesKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// First, write a setting.
+	err := SaveUserSetting("alwaysThinkingEnabled", false)
+	if err != nil {
+		t.Fatalf("SaveUserSetting: %v", err)
+	}
+
+	// Verify it's there.
+	path := filepath.Join(home, ".claude", "settings.json")
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "alwaysThinkingEnabled") {
+		t.Fatalf("key should exist after setting it, got: %s", data)
+	}
+
+	// Now save nil to remove the key.
+	err = SaveUserSetting("alwaysThinkingEnabled", nil)
+	if err != nil {
+		t.Fatalf("SaveUserSetting(nil): %v", err)
+	}
+
+	data, _ = os.ReadFile(path)
+	var settings map[string]interface{}
+	json.Unmarshal(data, &settings)
+
+	if _, exists := settings["alwaysThinkingEnabled"]; exists {
+		t.Errorf("nil save should remove the key, but it still exists in: %s", data)
+	}
+}
+
 func TestUserSettingsPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

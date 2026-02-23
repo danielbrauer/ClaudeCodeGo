@@ -38,11 +38,11 @@ func TestConfigPanel_GetValue_BoolDefaults(t *testing.T) {
 		id   string
 		want string
 	}{
-		{"autoCompactEnabled", "true"},   // default true
-		{"thinkingEnabled", "false"},     // default false
-		{"fastMode", "false"},            // default false
-		{"verbose", "false"},             // default false
-		{"respectGitignore", "true"},     // default true
+		{"autoCompactEnabled", "true"},          // default true
+		{"alwaysThinkingEnabled", "true"},        // default true
+		{"fastMode", "false"},                    // default false
+		{"verbose", "false"},                     // default false
+		{"respectGitignore", "true"},             // default true
 	}
 
 	for _, tt := range tests {
@@ -137,6 +137,25 @@ func TestConfigPanel_ToggleBool(t *testing.T) {
 	cp.toggleBool("autoCompactEnabled", s)
 	if s.AutoCompactEnabled == nil || *s.AutoCompactEnabled != true {
 		t.Errorf("after double toggle, AutoCompactEnabled = %v, want true", s.AutoCompactEnabled)
+	}
+}
+
+func TestConfigPanel_ToggleBool_ThinkingMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	s := &config.Settings{}
+	cp := newConfigPanel(s)
+
+	// alwaysThinkingEnabled defaults to true; toggling should make it false.
+	cp.toggleBool("alwaysThinkingEnabled", s)
+	if s.ThinkingEnabled == nil || *s.ThinkingEnabled != false {
+		t.Errorf("after toggle, ThinkingEnabled = %v, want false", s.ThinkingEnabled)
+	}
+
+	// Toggle again: should become true.
+	cp.toggleBool("alwaysThinkingEnabled", s)
+	if s.ThinkingEnabled == nil || *s.ThinkingEnabled != true {
+		t.Errorf("after double toggle, ThinkingEnabled = %v, want true", s.ThinkingEnabled)
 	}
 }
 
@@ -235,7 +254,7 @@ func TestConfigPanel_ApplyFilter(t *testing.T) {
 	// Verify filtered items are the right ones.
 	for _, idx := range cp.filtered {
 		item := cp.items[idx]
-		if item.id != "thinkingEnabled" && item.id != "fastMode" && item.id != "editorMode" {
+		if item.id != "alwaysThinkingEnabled" && item.id != "fastMode" && item.id != "editorMode" {
 			t.Errorf("unexpected filtered item: %q", item.id)
 		}
 	}

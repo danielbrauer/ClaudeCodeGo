@@ -34,21 +34,22 @@ func testModel(t *testing.T, opts ...testModelOption) (model, *mock.Backend) {
 	if cfg.responder != nil {
 		b = mock.NewBackend(cfg.responder)
 		t.Cleanup(b.Close)
-		client = b.Client()
+		client = b.Client(api.WithModel(cfg.modelName))
 	} else {
 		// Default: static text responder.
 		b = mock.NewBackend(&mock.StaticResponder{
 			Response: mock.TextResponse("ok", 1),
 		})
 		t.Cleanup(b.Close)
-		client = b.Client()
+		client = b.Client(api.WithModel(cfg.modelName))
 	}
 
 	handler := &collectingStreamHandler{}
 	loop := conversation.NewLoop(conversation.LoopConfig{
-		Client:    client,
-		Handler:   handler,
-		Compactor: cfg.compactor,
+		Client:          client,
+		Handler:         handler,
+		Compactor:       cfg.compactor,
+		ThinkingEnabled: cfg.thinkingEnabled,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -73,23 +74,27 @@ func testModel(t *testing.T, opts ...testModelOption) (model, *mock.Backend) {
 	)
 	m.apiClient = client
 
+	// Sync fast mode to the loop, matching main.go behavior.
+	loop.SetFastMode(cfg.fastMode)
+
 	return m, b
 }
 
 // testModelConfig holds configuration options for testModel.
 type testModelConfig struct {
-	modelName     string
-	version       string
-	responder     mock.Responder
-	mcpStatus     MCPStatus
-	skills        []skills.Skill
-	sessStore     *session.Store
-	session       *session.Session
-	settings      *config.Settings
-	onModelSwitch func(string)
-	logoutFunc    func() error
-	fastMode      bool
-	compactor     *conversation.Compactor
+	modelName       string
+	version         string
+	responder       mock.Responder
+	mcpStatus       MCPStatus
+	skills          []skills.Skill
+	sessStore       *session.Store
+	session         *session.Session
+	settings        *config.Settings
+	onModelSwitch   func(string)
+	logoutFunc      func() error
+	fastMode        bool
+	compactor       *conversation.Compactor
+	thinkingEnabled *bool // nil = default (true)
 }
 
 // testModelOption is a functional option for testModel.
@@ -141,6 +146,10 @@ func withFastMode(on bool) testModelOption {
 
 func withCompactor(c *conversation.Compactor) testModelOption {
 	return func(cfg *testModelConfig) { cfg.compactor = c }
+}
+
+func withThinkingEnabled(v *bool) testModelOption {
+	return func(cfg *testModelConfig) { cfg.thinkingEnabled = v }
 }
 
 // collectingStreamHandler collects all streamed text for assertions.

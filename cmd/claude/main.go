@@ -278,14 +278,15 @@ func main() {
 	// In print mode, use the simple PrintStreamHandler.
 	handler := &conversation.ToolAwareStreamHandler{}
 	loop := conversation.NewLoop(conversation.LoopConfig{
-		Client:    client,
-		System:    system,
-		Tools:     registry.Definitions(),
-		ToolExec:  registry,
-		Handler:   handler,
-		History:   history,
-		Compactor: compactor,
-		Hooks:     hookRunner, // Phase 7: wire hooks into the loop
+		Client:          client,
+		System:          system,
+		Tools:           registry.Definitions(),
+		ToolExec:        registry,
+		Handler:         handler,
+		History:         history,
+		Compactor:       compactor,
+		Hooks:           hookRunner, // Phase 7: wire hooks into the loop
+		ThinkingEnabled: settings.ThinkingEnabled,
 		OnTurnComplete: func(h *conversation.History) {
 			// Save session after each turn.
 			if sessionStore != nil && currentSession != nil {

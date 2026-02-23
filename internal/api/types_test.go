@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -124,5 +126,135 @@ func TestModelConstants(t *testing.T) {
 	}
 	if ModelClaude45Haiku != "claude-haiku-4-5-20251001" {
 		t.Errorf("ModelClaude45Haiku = %q, want %q", ModelClaude45Haiku, "claude-haiku-4-5-20251001")
+	}
+}
+
+// ===========================================================================
+// SupportsThinking
+// ===========================================================================
+
+func TestSupportsThinking(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-6", true},
+		{"claude-opus-4-6-20260101", true},
+		{"claude-sonnet-4-6", true},
+		{"claude-sonnet-4-6-20260101", true},
+		{"claude-sonnet-4-20250514", true},
+		{"claude-opus-4-20250514", true},
+		{"CLAUDE-OPUS-4-6", true},         // case insensitive
+		{"claude-haiku-4-5-20251001", false}, // Haiku doesn't have sonnet-4 or opus-4
+		{"claude-3-5-sonnet-20241022", false},
+		{"gpt-4", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsThinking(tt.model)
+			if got != tt.want {
+				t.Errorf("SupportsThinking(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+// ===========================================================================
+// SupportsAdaptiveThinking
+// ===========================================================================
+
+func TestSupportsAdaptiveThinking(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-6", true},
+		{"claude-opus-4-6-20260101", true},
+		{"claude-sonnet-4-6", true},
+		{"claude-sonnet-4-6-20260101", true},
+		{"CLAUDE-OPUS-4-6", true},            // case insensitive
+		{"claude-sonnet-4-20250514", false},   // Sonnet 4 (not 4.6)
+		{"claude-opus-4-20250514", false},     // Opus 4 (not 4.6)
+		{"claude-haiku-4-5-20251001", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := SupportsAdaptiveThinking(tt.model)
+			if got != tt.want {
+				t.Errorf("SupportsAdaptiveThinking(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+// ===========================================================================
+// ThinkingConfig types
+// ===========================================================================
+
+func TestThinkingAdaptive(t *testing.T) {
+	cfg := ThinkingAdaptive()
+	if cfg.Type != "adaptive" {
+		t.Errorf("Type = %q, want 'adaptive'", cfg.Type)
+	}
+	if cfg.BudgetTokens != 0 {
+		t.Errorf("BudgetTokens = %d, want 0", cfg.BudgetTokens)
+	}
+}
+
+func TestThinkingEnabled(t *testing.T) {
+	cfg := ThinkingEnabled(10000)
+	if cfg.Type != "enabled" {
+		t.Errorf("Type = %q, want 'enabled'", cfg.Type)
+	}
+	if cfg.BudgetTokens != 10000 {
+		t.Errorf("BudgetTokens = %d, want 10000", cfg.BudgetTokens)
+	}
+}
+
+func TestThinkingDisabled(t *testing.T) {
+	cfg := ThinkingDisabled()
+	if cfg.Type != "disabled" {
+		t.Errorf("Type = %q, want 'disabled'", cfg.Type)
+	}
+}
+
+func TestThinkingConfigSerialization(t *testing.T) {
+	// Adaptive: should serialize without budget_tokens.
+	req := &CreateMessageRequest{
+		Model:    "claude-opus-4-6",
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Thinking: ThinkingAdaptive(),
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"thinking":{"type":"adaptive"}`) {
+		t.Errorf("adaptive thinking serialization wrong: %s", data)
+	}
+
+	// Enabled with budget.
+	req2 := &CreateMessageRequest{
+		Model:    "claude-sonnet-4-20250514",
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Thinking: ThinkingEnabled(8000),
+	}
+	data2, _ := json.Marshal(req2)
+	if !strings.Contains(string(data2), `"thinking":{"type":"enabled","budget_tokens":8000}`) {
+		t.Errorf("enabled thinking serialization wrong: %s", data2)
+	}
+
+	// nil thinking should be omitted.
+	req3 := &CreateMessageRequest{
+		Model:    "claude-haiku-4-5-20251001",
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+	}
+	data3, _ := json.Marshal(req3)
+	if strings.Contains(string(data3), "thinking") {
+		t.Errorf("nil thinking should be omitted, got: %s", data3)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/anthropics/claude-code-go/internal/api"
 )
@@ -45,6 +46,7 @@ type Loop struct {
 	onTurnComplete func(history *History)
 	hooks          HookRunner // Phase 7: nil = no hooks
 	fastMode       bool       // when true, sends speed:"fast" on eligible models
+	thinkingEnabled bool      // when true (default), sends thinking config to the API
 }
 
 // LoopConfig configures the agentic loop.
@@ -58,6 +60,7 @@ type LoopConfig struct {
 	Compactor      *Compactor             // if non-nil, enables auto-compaction
 	OnTurnComplete func(history *History)  // called after each API round-trip
 	Hooks          HookRunner             // Phase 7: nil = no hooks
+	ThinkingEnabled *bool                 // nil = true (enabled by default)
 }
 
 // NewLoop creates a new agentic conversation loop.
@@ -66,16 +69,19 @@ func NewLoop(cfg LoopConfig) *Loop {
 	if history == nil {
 		history = NewHistory()
 	}
+	// Thinking is enabled by default (nil means true).
+	thinkingOn := cfg.ThinkingEnabled == nil || *cfg.ThinkingEnabled
 	return &Loop{
-		client:         cfg.Client,
-		history:        history,
-		system:         cfg.System,
-		tools:          cfg.Tools,
-		toolExec:       cfg.ToolExec,
-		handler:        cfg.Handler,
-		compactor:      cfg.Compactor,
-		onTurnComplete: cfg.OnTurnComplete,
-		hooks:          cfg.Hooks,
+		client:          cfg.Client,
+		history:         history,
+		system:          cfg.System,
+		tools:           cfg.Tools,
+		toolExec:        cfg.ToolExec,
+		handler:         cfg.Handler,
+		compactor:       cfg.Compactor,
+		onTurnComplete:  cfg.OnTurnComplete,
+		hooks:           cfg.Hooks,
+		thinkingEnabled: thinkingOn,
 	}
 }
 
@@ -103,6 +109,16 @@ func (l *Loop) FastMode() bool {
 // SetFastMode enables or disables fast mode.
 func (l *Loop) SetFastMode(on bool) {
 	l.fastMode = on
+}
+
+// ThinkingEnabled returns whether thinking mode is enabled.
+func (l *Loop) ThinkingEnabled() bool {
+	return l.thinkingEnabled
+}
+
+// SetThinkingEnabled enables or disables thinking mode.
+func (l *Loop) SetThinkingEnabled(on bool) {
+	l.thinkingEnabled = on
 }
 
 // SetPermissionHandler replaces the permission handler on the tool executor.
@@ -153,6 +169,63 @@ func (l *Loop) SetOnTurnComplete(fn func(history *History)) {
 	l.onTurnComplete = fn
 }
 
+// buildThinkingConfig returns the thinking configuration for the current
+// request based on the model, settings, and environment variables.
+// It mirrors the JS CLI logic:
+//   - CLAUDE_CODE_DISABLE_THINKING=1 → disabled
+//   - MAX_THINKING_TOKENS env → enabled with explicit budget (0 = disabled)
+//   - thinkingEnabled=false → disabled
+//   - Opus 4.6 / Sonnet 4.6 → adaptive thinking
+//   - Other Claude 4 models → enabled with budget = maxTokens - 1
+//   - Models that don't support thinking → nil (omit from request)
+func (l *Loop) buildThinkingConfig() *api.ThinkingConfig {
+	model := l.client.Model()
+
+	// Check if the model supports thinking at all.
+	if !api.SupportsThinking(model) {
+		return nil
+	}
+
+	// CLAUDE_CODE_DISABLE_THINKING overrides everything.
+	if envBoolTrue(os.Getenv("CLAUDE_CODE_DISABLE_THINKING")) {
+		return nil
+	}
+
+	// MAX_THINKING_TOKENS env var: explicit budget override.
+	if envVal := os.Getenv("MAX_THINKING_TOKENS"); envVal != "" {
+		budget, err := strconv.Atoi(envVal)
+		if err == nil {
+			if budget <= 0 {
+				return nil
+			}
+			return api.ThinkingEnabled(budget)
+		}
+	}
+
+	// Check the setting toggle.
+	if !l.thinkingEnabled {
+		return nil
+	}
+
+	// Adaptive thinking for models that support it (Opus 4.6, Sonnet 4.6).
+	if api.SupportsAdaptiveThinking(model) {
+		return api.ThinkingAdaptive()
+	}
+
+	// Budget-based thinking for other Claude 4 models.
+	// Budget must be less than max_tokens; use max_tokens - 1 (matching JS: An8).
+	return api.ThinkingEnabled(api.DefaultMaxTokens - 1)
+}
+
+// envBoolTrue returns true if the value is a truthy string (1, true, yes).
+func envBoolTrue(val string) bool {
+	switch val {
+	case "1", "true", "yes", "TRUE", "YES":
+		return true
+	}
+	return false
+}
+
 func (l *Loop) run(ctx context.Context) error {
 	for {
 		req := &api.CreateMessageRequest{
@@ -160,6 +233,9 @@ func (l *Loop) run(ctx context.Context) error {
 			System:   l.system,
 			Tools:    l.tools,
 		}
+
+		// Apply thinking configuration based on model and settings.
+		req.Thinking = l.buildThinkingConfig()
 
 		// Apply fast mode: add speed:"fast" when enabled on an eligible model.
 		if l.fastMode && api.IsOpus46Model(l.client.Model()) {

@@ -108,3 +108,214 @@ func TestLoop_SetOnTurnCompleteNil(t *testing.T) {
 		t.Error("expected onTurnComplete to be nil")
 	}
 }
+
+// ===========================================================================
+// Thinking mode tests
+// ===========================================================================
+
+func TestLoop_ThinkingEnabled_DefaultTrue(t *testing.T) {
+	// nil ThinkingEnabled in config should default to true.
+	loop := NewLoop(LoopConfig{})
+	if !loop.ThinkingEnabled() {
+		t.Error("ThinkingEnabled should default to true when nil")
+	}
+}
+
+func TestLoop_ThinkingEnabled_ExplicitTrue(t *testing.T) {
+	enabled := true
+	loop := NewLoop(LoopConfig{ThinkingEnabled: &enabled})
+	if !loop.ThinkingEnabled() {
+		t.Error("ThinkingEnabled should be true")
+	}
+}
+
+func TestLoop_ThinkingEnabled_ExplicitFalse(t *testing.T) {
+	disabled := false
+	loop := NewLoop(LoopConfig{ThinkingEnabled: &disabled})
+	if loop.ThinkingEnabled() {
+		t.Error("ThinkingEnabled should be false")
+	}
+}
+
+func TestLoop_SetThinkingEnabled(t *testing.T) {
+	loop := NewLoop(LoopConfig{})
+
+	loop.SetThinkingEnabled(false)
+	if loop.ThinkingEnabled() {
+		t.Error("after SetThinkingEnabled(false), should be false")
+	}
+
+	loop.SetThinkingEnabled(true)
+	if !loop.ThinkingEnabled() {
+		t.Error("after SetThinkingEnabled(true), should be true")
+	}
+}
+
+// clearThinkingEnv ensures no env vars interfere with thinking config tests.
+func clearThinkingEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("MAX_THINKING_TOKENS", "")
+	t.Setenv("CLAUDE_CODE_DISABLE_THINKING", "")
+}
+
+func TestLoop_BuildThinkingConfig_AdaptiveForOpus46(t *testing.T) {
+	clearThinkingEnv(t)
+	client := api.NewClient(nil, api.WithModel("claude-opus-4-6"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	cfg := loop.buildThinkingConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil thinking config for Opus 4.6")
+	}
+	if cfg.Type != "adaptive" {
+		t.Errorf("Type = %q, want 'adaptive'", cfg.Type)
+	}
+	if cfg.BudgetTokens != 0 {
+		t.Errorf("BudgetTokens = %d, want 0 (not used for adaptive)", cfg.BudgetTokens)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_AdaptiveForSonnet46(t *testing.T) {
+	clearThinkingEnv(t)
+	client := api.NewClient(nil, api.WithModel("claude-sonnet-4-6"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	cfg := loop.buildThinkingConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil thinking config for Sonnet 4.6")
+	}
+	if cfg.Type != "adaptive" {
+		t.Errorf("Type = %q, want 'adaptive'", cfg.Type)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_BudgetForOlderModels(t *testing.T) {
+	clearThinkingEnv(t)
+	// claude-sonnet-4-20250514 supports thinking but not adaptive.
+	client := api.NewClient(nil, api.WithModel("claude-sonnet-4-20250514"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	cfg := loop.buildThinkingConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil thinking config for Sonnet 4")
+	}
+	if cfg.Type != "enabled" {
+		t.Errorf("Type = %q, want 'enabled'", cfg.Type)
+	}
+	if cfg.BudgetTokens != api.DefaultMaxTokens-1 {
+		t.Errorf("BudgetTokens = %d, want %d", cfg.BudgetTokens, api.DefaultMaxTokens-1)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_NilForUnsupportedModels(t *testing.T) {
+	clearThinkingEnv(t)
+	// Haiku doesn't support thinking.
+	client := api.NewClient(nil, api.WithModel("claude-haiku-4-5-20251001"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	cfg := loop.buildThinkingConfig()
+	if cfg != nil {
+		t.Errorf("expected nil thinking config for Haiku, got %+v", cfg)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_DisabledBySetting(t *testing.T) {
+	clearThinkingEnv(t)
+	client := api.NewClient(nil, api.WithModel("claude-opus-4-6"))
+	disabled := false
+	loop := NewLoop(LoopConfig{Client: client, ThinkingEnabled: &disabled})
+
+	cfg := loop.buildThinkingConfig()
+	if cfg != nil {
+		t.Errorf("expected nil when thinking disabled, got %+v", cfg)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_DisableEnv(t *testing.T) {
+	client := api.NewClient(nil, api.WithModel("claude-opus-4-6"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	t.Setenv("CLAUDE_CODE_DISABLE_THINKING", "1")
+
+	cfg := loop.buildThinkingConfig()
+	if cfg != nil {
+		t.Errorf("expected nil with CLAUDE_CODE_DISABLE_THINKING=1, got %+v", cfg)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_MaxThinkingTokensEnv(t *testing.T) {
+	client := api.NewClient(nil, api.WithModel("claude-opus-4-6"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	t.Setenv("MAX_THINKING_TOKENS", "5000")
+
+	cfg := loop.buildThinkingConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil with MAX_THINKING_TOKENS=5000")
+	}
+	if cfg.Type != "enabled" {
+		t.Errorf("Type = %q, want 'enabled'", cfg.Type)
+	}
+	if cfg.BudgetTokens != 5000 {
+		t.Errorf("BudgetTokens = %d, want 5000", cfg.BudgetTokens)
+	}
+}
+
+func TestLoop_BuildThinkingConfig_MaxThinkingTokensZero(t *testing.T) {
+	client := api.NewClient(nil, api.WithModel("claude-opus-4-6"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	t.Setenv("MAX_THINKING_TOKENS", "0")
+
+	cfg := loop.buildThinkingConfig()
+	if cfg != nil {
+		t.Errorf("expected nil with MAX_THINKING_TOKENS=0, got %+v", cfg)
+	}
+}
+
+func TestEnvBoolTrue(t *testing.T) {
+	tests := []struct {
+		val  string
+		want bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"yes", true},
+		{"TRUE", true},
+		{"YES", true},
+		{"0", false},
+		{"false", false},
+		{"no", false},
+		{"", false},
+		{"maybe", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.val, func(t *testing.T) {
+			got := envBoolTrue(tt.val)
+			if got != tt.want {
+				t.Errorf("envBoolTrue(%q) = %v, want %v", tt.val, got, tt.want)
+			}
+		})
+	}
+}
+
+// Verify that CLAUDE_CODE_DISABLE_THINKING is not read from a stale cache.
+func TestLoop_BuildThinkingConfig_EnvNotCached(t *testing.T) {
+	clearThinkingEnv(t)
+	client := api.NewClient(nil, api.WithModel("claude-opus-4-6"))
+	loop := NewLoop(LoopConfig{Client: client})
+
+	// First call: no env set, should return adaptive.
+	cfg := loop.buildThinkingConfig()
+	if cfg == nil || cfg.Type != "adaptive" {
+		t.Fatalf("expected adaptive, got %+v", cfg)
+	}
+
+	// Set env and call again: should return nil.
+	t.Setenv("CLAUDE_CODE_DISABLE_THINKING", "1")
+	cfg = loop.buildThinkingConfig()
+	if cfg != nil {
+		t.Errorf("expected nil after setting env, got %+v", cfg)
+	}
+}

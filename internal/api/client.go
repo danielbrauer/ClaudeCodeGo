@@ -117,6 +117,9 @@ func (c *Client) CreateMessageStream(
 	if req.Speed == "fast" {
 		extraBetas = append(extraBetas, FastModeBeta)
 	}
+	if req.Thinking != nil && req.Thinking.Type == "adaptive" {
+		extraBetas = append(extraBetas, AdaptiveThinkingBeta)
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
