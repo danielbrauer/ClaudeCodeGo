@@ -477,6 +477,14 @@ func (m model) closeConfigPanel() (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if m.configPanel != nil {
+		// Sync fast mode if it changed via the config panel.
+		// The panel already persisted to disk, so we only need to
+		// update the runtime state (m.fastMode, loop, model switch).
+		newFast := config.BoolVal(m.settings.FastMode, false)
+		if newFast != m.fastMode {
+			applyFastMode(&m, newFast)
+		}
+
 		changes := m.configPanel.buildChangeSummary()
 		if len(changes) > 0 {
 			summary := configTitleStyle.Render("Config changes:") + "\n"
