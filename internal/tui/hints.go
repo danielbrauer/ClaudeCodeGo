@@ -57,19 +57,17 @@ func (m model) inputAreaHint() string {
 	return ""
 }
 
-// streamingExtraHint returns text shown above the input area during streaming
-// (queue badge and interrupt shortcut). Returns empty when not streaming.
+// streamingExtraHint returns text shown below the input area during streaming
+// (queue badge when input is empty). Returns empty when not streaming or when
+// there is nothing extra to show. The main interrupt/queue hint is already
+// rendered by renderInputArea, so this only adds supplementary info.
 func (m model) streamingExtraHint() string {
 	if m.mode != modeStreaming {
 		return ""
 	}
-	var b strings.Builder
 	if m.textInput.Value() == "" && m.queue.Len() > 0 {
-		b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
-			m.queue.Len(), pluralS(m.queue.Len()))))
-		b.WriteString("\n")
+		return queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
+			m.queue.Len(), pluralS(m.queue.Len()))) + "\n"
 	}
-	b.WriteString("  " + shortcutsHintStyle.Render("esc to interrupt"))
-	b.WriteString("\n")
-	return b.String()
+	return ""
 }
