@@ -5,16 +5,50 @@ import "encoding/json"
 
 // Model identifiers.
 const (
-	ModelClaude4Opus   = "claude-opus-4-20250514"
-	ModelClaude4Sonnet = "claude-sonnet-4-20250514"
-	ModelClaude35Haiku = "claude-3-5-haiku-20241022"
+	ModelClaude46Opus   = "claude-opus-4-6"
+	ModelClaude46Sonnet = "claude-sonnet-4-6"
+	ModelClaude45Haiku  = "claude-haiku-4-5-20251001"
 )
 
 // Friendly model name mapping.
 var ModelAliases = map[string]string{
-	"opus":   ModelClaude4Opus,
-	"sonnet": ModelClaude4Sonnet,
-	"haiku":  ModelClaude35Haiku,
+	"opus":   ModelClaude46Opus,
+	"sonnet": ModelClaude46Sonnet,
+	"haiku":  ModelClaude45Haiku,
+}
+
+// ModelOption describes a model available for selection.
+type ModelOption struct {
+	Alias       string // short name: "opus", "sonnet", "haiku"
+	ID          string // full model ID
+	DisplayName string // human-readable: "Opus 4.6", "Sonnet 4.6", "Haiku 4.5"
+	Description string // brief capability note
+}
+
+// AvailableModels is the ordered list of models shown in the /model picker.
+var AvailableModels = []ModelOption{
+	{Alias: "sonnet", ID: ModelClaude46Sonnet, DisplayName: "Sonnet 4.6", Description: "Best for everyday tasks (default)"},
+	{Alias: "opus", ID: ModelClaude46Opus, DisplayName: "Opus 4.6", Description: "Most capable for complex work"},
+	{Alias: "haiku", ID: ModelClaude45Haiku, DisplayName: "Haiku 4.5", Description: "Fastest for quick answers"},
+}
+
+// ModelDisplayName returns a friendly display name for a model ID or alias.
+func ModelDisplayName(model string) string {
+	for _, opt := range AvailableModels {
+		if model == opt.ID || model == opt.Alias {
+			return opt.DisplayName
+		}
+	}
+	return model
+}
+
+// ResolveModelAlias resolves a model alias to its full ID. If the input
+// is not a known alias, it is returned as-is (assumed to be a full model ID).
+func ResolveModelAlias(input string) string {
+	if resolved, ok := ModelAliases[input]; ok {
+		return resolved
+	}
+	return input
 }
 
 // Role constants for messages.

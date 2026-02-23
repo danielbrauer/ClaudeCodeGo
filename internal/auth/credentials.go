@@ -199,6 +199,19 @@ func (s *CredentialStore) SaveAPIKey(key string) error {
 	return os.WriteFile(s.path, newData, 0600)
 }
 
+// Delete removes the credentials file entirely, clearing all stored tokens,
+// account metadata, and API keys. Used by the logout flow.
+func (s *CredentialStore) Delete() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err := os.Remove(s.path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing credentials file: %w", err)
+	}
+	return nil
+}
+
 // lockPath returns the path to the credential lock file.
 func (s *CredentialStore) lockPath() string {
 	return filepath.Join(s.dir, ".credentials.lock")
