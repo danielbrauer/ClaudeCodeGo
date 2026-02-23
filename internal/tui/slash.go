@@ -134,6 +134,18 @@ func newSlashRegistry() *slashRegistry {
 	})
 
 	r.register(SlashCommand{
+		Name:        "resume",
+		Description: "Resume a previous session",
+		Execute:     nil, // handled specially in Update (needs session picker)
+	})
+
+	r.register(SlashCommand{
+		Name:        "continue",
+		Description: "Resume the most recent session",
+		Execute:     nil, // handled specially in Update
+	})
+
+	r.register(SlashCommand{
 		Name:        "quit",
 		Description: "Exit the program",
 		Execute:     nil, // handled specially in Update

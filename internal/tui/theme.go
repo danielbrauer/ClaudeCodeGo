@@ -76,4 +76,12 @@ var (
 	userLabelStyle = lipgloss.NewStyle().
 			Foreground(colorPurple).
 			Bold(true)
+
+	// Resume session picker.
+	resumeHeaderStyle = lipgloss.NewStyle().
+				Foreground(colorCyan).
+				Bold(true)
+
+	resumeIDStyle = lipgloss.NewStyle().
+			Foreground(colorPurple)
 )
