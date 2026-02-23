@@ -12,6 +12,7 @@ import (
 
 	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/conversation"
+	"github.com/anthropics/claude-code-go/internal/session"
 	"github.com/anthropics/claude-code-go/internal/skills"
 	"github.com/anthropics/claude-code-go/internal/tools"
 )
@@ -36,6 +37,10 @@ type model struct {
 	modelName string
 	version   string
 	mcpStatus MCPStatus // MCP manager for /mcp command; may be nil
+
+	// Session management (for /clear).
+	session   *session.Session
+	sessStore *session.Store
 
 	// UI state.
 	mode          uiMode
@@ -96,6 +101,8 @@ func newModel(
 	width int,
 	mcpStatus MCPStatus,
 	loadedSkills []skills.Skill,
+	sess *session.Session,
+	sessStore *session.Store,
 	onModelSwitch func(newModel string),
 	logoutFunc func() error,
 ) model {
@@ -116,6 +123,8 @@ func newModel(
 		modelName:     modelName,
 		version:       version,
 		mcpStatus:     mcpStatus,
+		session:       sess,
+		sessStore:     sessStore,
 		onModelSwitch: onModelSwitch,
 		mode:          modeInput,
 		width:         width,
@@ -391,6 +400,46 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 				}
 				return LoopDoneMsg{}
 			}
+		}
+
+		if cmdName == "clear" || cmdName == "reset" || cmdName == "new" {
+			// Clear conversation history.
+			m.loop.Clear()
+
+			// Reset token tracking.
+			m.tokens = tokenTracker{}
+
+			// Clear todo list.
+			m.todos = nil
+
+			// Create a new session, preserving the model and CWD.
+			if m.session != nil {
+				m.session = &session.Session{
+					ID:    session.GenerateID(),
+					Model: m.session.Model,
+					CWD:   m.session.CWD,
+				}
+
+				// Update the turn-complete callback to reference the new session.
+				newSess := m.session
+				store := m.sessStore
+				m.loop.SetOnTurnComplete(func(h *conversation.History) {
+					if store != nil && newSess != nil {
+						newSess.Messages = h.Messages()
+						_ = store.Save(newSess)
+					}
+				})
+
+				if m.sessStore != nil {
+					if err := m.sessStore.Save(m.session); err != nil {
+						errLine := errorStyle.Render("Warning: failed to save new session: " + err.Error())
+						cmds = append(cmds, tea.Println(errLine))
+					}
+				}
+			}
+
+			cmds = append(cmds, tea.Println("Conversation cleared. Starting fresh."))
+			return m, tea.Batch(cmds...)
 		}
 
 		if cmdName == "memory" {

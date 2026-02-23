@@ -131,6 +131,17 @@ func (l *Loop) Compact(ctx context.Context) error {
 	return l.compactor.Compact(ctx, l.history)
 }
 
+// Clear resets the conversation history to empty, starting a fresh conversation.
+func (l *Loop) Clear() {
+	l.history.SetMessages(nil)
+}
+
+// SetOnTurnComplete replaces the turn-complete callback. This is used by
+// /clear to point the callback at the new session after clearing.
+func (l *Loop) SetOnTurnComplete(fn func(history *History)) {
+	l.onTurnComplete = fn
+}
+
 func (l *Loop) run(ctx context.Context) error {
 	for {
 		req := &api.CreateMessageRequest{
