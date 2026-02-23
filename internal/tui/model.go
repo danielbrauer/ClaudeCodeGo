@@ -170,6 +170,23 @@ func newModel(
 	}
 }
 
+// applyFastMode synchronizes fast mode state across the model, settings,
+// and conversation loop. It does not persist to disk — the caller is
+// responsible for calling config.SaveUserSetting when appropriate.
+func applyFastMode(m *model, enabled bool) {
+	m.fastMode = enabled
+	if m.settings != nil {
+		m.settings.FastMode = config.BoolPtr(enabled)
+	}
+	m.loop.SetFastMode(enabled)
+
+	if enabled && !api.IsOpus46Model(m.modelName) {
+		resolved := api.ModelAliases[api.FastModeModelAlias]
+		m.modelName = resolved
+		m.loop.SetModel(resolved)
+	}
+}
+
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		textarea.Blink,

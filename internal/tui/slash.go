@@ -175,17 +175,7 @@ func newSlashRegistry() *slashRegistry {
 		Name:        "fast",
 		Description: "Toggle fast mode (" + api.FastModeDisplayName + " only)",
 		Execute: func(m *model) string {
-			m.fastMode = !m.fastMode
-			m.loop.SetFastMode(m.fastMode)
-
-			if m.fastMode {
-				// If current model isn't eligible for fast mode, switch to Opus.
-				if !api.IsOpus46Model(m.modelName) {
-					resolved := api.ModelAliases[api.FastModeModelAlias]
-					m.modelName = resolved
-					m.loop.SetModel(resolved)
-				}
-			}
+			applyFastMode(m, !m.fastMode)
 
 			// Persist to user settings.
 			_ = config.SaveUserSetting("fastMode", m.fastMode)
