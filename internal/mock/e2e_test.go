@@ -147,8 +147,21 @@ func TestE2E_ToolUseThenResponse(t *testing.T) {
 	}
 
 	// Backend should have received 2 requests (one for each API call).
-	if b.RequestCount() != 2 {
-		t.Errorf("backend requests = %d, want 2", b.RequestCount())
+	reqs := b.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("backend requests = %d, want 2", len(reqs))
+	}
+
+	// The second request should contain the FileWrite tool result (not an error).
+	toolResults := reqs[1].ToolResults()
+	if len(toolResults) != 1 {
+		t.Fatalf("tool results in request 2 = %d, want 1", len(toolResults))
+	}
+	if toolResults[0].ToolUseID != "toolu_write_1" {
+		t.Errorf("tool_use_id = %q, want %q", toolResults[0].ToolUseID, "toolu_write_1")
+	}
+	if toolResults[0].IsError {
+		t.Errorf("tool result should not be an error")
 	}
 }
 
@@ -200,6 +213,22 @@ func TestE2E_FileReadTool(t *testing.T) {
 	// The second request should have more messages (original + assistant + tool result).
 	if len(reqs[1].Body.Messages) != 3 {
 		t.Errorf("second request messages = %d, want 3", len(reqs[1].Body.Messages))
+	}
+
+	// The tool result should contain the file content.
+	toolResults := reqs[1].ToolResults()
+	if len(toolResults) != 1 {
+		t.Fatalf("tool results = %d, want 1", len(toolResults))
+	}
+	if toolResults[0].ToolUseID != "toolu_read_1" {
+		t.Errorf("tool_use_id = %q", toolResults[0].ToolUseID)
+	}
+	readContent := mock.ToolResultContent(toolResults[0])
+	if !strings.Contains(readContent, "# Title") {
+		t.Errorf("tool result should contain file content, got: %q", readContent)
+	}
+	if !strings.Contains(readContent, "Some content here.") {
+		t.Errorf("tool result should contain full file, got: %q", readContent)
 	}
 }
 
@@ -291,12 +320,31 @@ func TestE2E_MultipleToolCalls(t *testing.T) {
 	}
 
 	// Both tools should have executed and results sent back.
-	if b.RequestCount() != 2 {
-		t.Errorf("request count = %d, want 2", b.RequestCount())
+	reqs := b.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("request count = %d, want 2", len(reqs))
 	}
 
 	if handler.fullText() != "Found main.go with a main function." {
 		t.Errorf("response = %q", handler.fullText())
+	}
+
+	// The second request should contain results for both tool calls.
+	toolResults := reqs[1].ToolResults()
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results in request 2 = %d, want 2", len(toolResults))
+	}
+
+	// Glob result should list main.go.
+	globResult := mock.ToolResultContent(toolResults[0])
+	if !strings.Contains(globResult, "main.go") {
+		t.Errorf("glob result should contain main.go, got: %q", globResult)
+	}
+
+	// Grep result should contain the match.
+	grepResult := mock.ToolResultContent(toolResults[1])
+	if !strings.Contains(grepResult, "main.go") {
+		t.Errorf("grep result should reference main.go, got: %q", grepResult)
 	}
 
 	// History: user + assistant (2 tools) + user (2 tool results) + assistant (text) = 4.
@@ -392,8 +440,9 @@ func TestE2E_ToolChain(t *testing.T) {
 	}
 
 	// 3 API calls: write-tool → read-tool → final text.
-	if b.RequestCount() != 3 {
-		t.Errorf("request count = %d, want 3", b.RequestCount())
+	reqs := b.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("request count = %d, want 3", len(reqs))
 	}
 
 	// File should exist with correct content.
@@ -403,6 +452,34 @@ func TestE2E_ToolChain(t *testing.T) {
 	}
 	if string(content) != "test content" {
 		t.Errorf("file content = %q", string(content))
+	}
+
+	// Request 2: should contain the FileWrite tool result.
+	writeResults := reqs[1].ToolResults()
+	if len(writeResults) != 1 {
+		t.Fatalf("request 2: tool results = %d, want 1", len(writeResults))
+	}
+	if writeResults[0].ToolUseID != "toolu_w1" {
+		t.Errorf("write result tool_use_id = %q", writeResults[0].ToolUseID)
+	}
+	if writeResults[0].IsError {
+		t.Errorf("write result should not be an error")
+	}
+
+	// Request 3: should contain the FileRead tool result with the file content.
+	readResults := reqs[2].ToolResults()
+	if len(readResults) != 1 {
+		t.Fatalf("request 3: tool results = %d, want 1", len(readResults))
+	}
+	if readResults[0].ToolUseID != "toolu_r1" {
+		t.Errorf("read result tool_use_id = %q", readResults[0].ToolUseID)
+	}
+	if readResults[0].IsError {
+		t.Errorf("read result should not be an error")
+	}
+	readContent := mock.ToolResultContent(readResults[0])
+	if !strings.Contains(readContent, "test content") {
+		t.Errorf("read result should contain file content, got: %q", readContent)
 	}
 
 	// The final streamed text should include all text blocks.
@@ -431,7 +508,7 @@ func TestE2E_UnknownTool(t *testing.T) {
 	})
 
 	handler := &collectingHandler{}
-	_, loop := setupLoop(t, responder, handler)
+	b, loop := setupLoop(t, responder, handler)
 
 	err := loop.SendMessage(context.Background(), "Do something")
 	if err != nil {
@@ -441,6 +518,23 @@ func TestE2E_UnknownTool(t *testing.T) {
 	// Should still get a response — the loop handles missing tools gracefully.
 	if !strings.Contains(handler.fullText(), "isn't available") {
 		t.Errorf("response = %q", handler.fullText())
+	}
+
+	// The tool result sent back should be an error.
+	reqs := b.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("request count = %d, want 2", len(reqs))
+	}
+	toolResults := reqs[1].ToolResults()
+	if len(toolResults) != 1 {
+		t.Fatalf("tool results = %d, want 1", len(toolResults))
+	}
+	if !toolResults[0].IsError {
+		t.Error("tool result for unknown tool should be an error")
+	}
+	errContent := mock.ToolResultContent(toolResults[0])
+	if !strings.Contains(errContent, "not available") {
+		t.Errorf("error content should mention tool not available, got: %q", errContent)
 	}
 }
 

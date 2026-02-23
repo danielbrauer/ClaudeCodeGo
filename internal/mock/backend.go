@@ -37,6 +37,67 @@ type CapturedRequest struct {
 	RawBody []byte
 }
 
+// ToolResults extracts tool_result content blocks from the last user message
+// in the request. This returns the tool results from the most recent turn,
+// which is typically what tests want to assert on.
+func (r *CapturedRequest) ToolResults() []api.ContentBlock {
+	// Walk backwards to find the last user message with tool results.
+	for i := len(r.Body.Messages) - 1; i >= 0; i-- {
+		msg := r.Body.Messages[i]
+		if msg.Role != api.RoleUser {
+			continue
+		}
+		var blocks []api.ContentBlock
+		if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+			continue
+		}
+		var results []api.ContentBlock
+		for _, b := range blocks {
+			if b.Type == api.ContentTypeToolResult {
+				results = append(results, b)
+			}
+		}
+		if len(results) > 0 {
+			return results
+		}
+	}
+	return nil
+}
+
+// AllToolResults extracts tool_result content blocks from all user messages
+// in the request. This returns every tool result in the conversation history.
+func (r *CapturedRequest) AllToolResults() []api.ContentBlock {
+	var results []api.ContentBlock
+	for _, msg := range r.Body.Messages {
+		if msg.Role != api.RoleUser {
+			continue
+		}
+		var blocks []api.ContentBlock
+		if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type == api.ContentTypeToolResult {
+				results = append(results, b)
+			}
+		}
+	}
+	return results
+}
+
+// ToolResultContent returns the string content of a tool_result block.
+// Tool results store their content as a JSON-encoded string in the Content field.
+func ToolResultContent(block api.ContentBlock) string {
+	if block.Type != api.ContentTypeToolResult {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(block.Content, &s); err != nil {
+		return string(block.Content)
+	}
+	return s
+}
+
 // NewBackend creates and starts a mock API backend with the given responder.
 func NewBackend(responder Responder) *Backend {
 	b := &Backend{responder: responder}
