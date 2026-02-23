@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/anthropics/claude-code-go/internal/skills"
@@ -27,14 +26,11 @@ func TestE2E_SkillCommand_RegistersAndExecutes(t *testing.T) {
 		t.Errorf("description = %q, want 'Create a commit'", cmd.Description)
 	}
 
-	// Execute should return the skill content with sentinel prefix.
-	output := cmd.Execute(&m)
-	if !strings.HasPrefix(output, skillCommandPrefix) {
-		t.Errorf("output should have skill prefix, got %q", output)
-	}
-	content := strings.TrimPrefix(output, skillCommandPrefix)
-	if content != "Please create a well-structured commit message." {
-		t.Errorf("skill content = %q", content)
+	// Execute should switch to streaming mode (content sent to loop).
+	result, _ := cmd.Execute(&m, "")
+	rm := result.(model)
+	if rm.mode != modeStreaming {
+		t.Errorf("mode = %d, want modeStreaming (%d)", rm.mode, modeStreaming)
 	}
 }
 

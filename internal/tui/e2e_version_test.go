@@ -8,11 +8,7 @@ import (
 func TestE2E_VersionCommand(t *testing.T) {
 	m, _ := testModel(t, withVersion("2.1.50"))
 
-	cmd, ok := m.slashReg.lookup("version")
-	if !ok {
-		t.Fatal("/version not registered")
-	}
-	output := cmd.Execute(&m)
+	output := versionText(&m)
 
 	if !strings.Contains(output, "2.1.50") {
 		t.Errorf("version output should contain version string, got %q", output)

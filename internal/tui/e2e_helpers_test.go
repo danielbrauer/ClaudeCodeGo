@@ -54,23 +54,23 @@ func testModel(t *testing.T, opts ...testModelOption) (model, *mock.Backend) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	m := newModel(
-		loop,
-		ctx,
-		cancel,
-		cfg.modelName,
-		cfg.version,
-		"", // no initial prompt
-		80, // width
-		cfg.mcpStatus,
-		cfg.skills,
-		cfg.sessStore,
-		cfg.session,
-		cfg.settings,
-		cfg.onModelSwitch,
-		cfg.logoutFunc,
-		cfg.fastMode,
-	)
+	m := newModel(ModelConfig{
+		Loop:          loop,
+		Ctx:           ctx,
+		CancelFn:      cancel,
+		ModelName:     cfg.modelName,
+		Version:       cfg.version,
+		InitialPrompt: "",
+		Width:         80,
+		MCPStatus:     cfg.mcpStatus,
+		Skills:        cfg.skills,
+		SessStore:     cfg.sessStore,
+		Session:       cfg.session,
+		Settings:      cfg.settings,
+		OnModelSwitch: cfg.onModelSwitch,
+		LogoutFunc:    cfg.logoutFunc,
+		FastMode:      cfg.fastMode,
+	})
 	m.apiClient = client
 
 	return m, b
