@@ -86,6 +86,18 @@ func newSlashRegistry() *slashRegistry {
 	})
 
 	r.register(SlashCommand{
+		Name:        "login",
+		Description: "Sign in to your Anthropic account",
+		Execute:     nil, // handled specially in handleSubmit (triggers quit + re-auth)
+	})
+
+	r.register(SlashCommand{
+		Name:        "logout",
+		Description: "Log out from your Anthropic account",
+		Execute:     nil, // handled specially in handleSubmit (clears credentials + quits)
+	})
+
+	r.register(SlashCommand{
 		Name:        "compact",
 		Description: "Compact conversation history",
 		Execute:     nil, // handled specially in Update (needs async)
