@@ -32,6 +32,7 @@ const (
 	modeModelPicker              // choosing a model via /model
 	modeDiff                     // viewing diff dialog
 	modeConfig                   // config panel open
+	modeHelp                     // viewing help screen
 )
 
 // model is the Bubble Tea model for the TUI.
@@ -105,6 +106,9 @@ type model struct {
 	completions    []string // current fuzzy-matched completions
 	completionIdx  int      // selected index in completions (-1 = none)
 	completionBase string   // the original typed text (without leading /)
+
+	// Help screen state.
+	helpTab int // 0=general, 1=commands, 2=custom-commands
 
 	// Fast mode toggle.
 	fastMode bool
@@ -353,6 +357,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 
+	case modeHelp:
+		return m.handleHelpKey(msg)
+
 	case modeResume:
 		return m.handleResumeKey(msg)
 
@@ -408,6 +415,15 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleSubmit(text)
 
 		default:
+			// Open help screen when '?' is pressed with empty input.
+			if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '?' {
+				if strings.TrimSpace(m.textInput.Value()) == "" {
+					m.helpTab = 0
+					m.mode = modeHelp
+					m.textInput.Blur()
+					return m, nil
+				}
+			}
 			var cmd tea.Cmd
 			m.textInput, cmd = m.textInput.Update(msg)
 			// Clear completions when the user types — they'll re-trigger on Tab.
@@ -465,6 +481,13 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		if cmdName == "quit" || cmdName == "exit" {
 			m.quitting = true
 			return m, tea.Quit
+		}
+
+		if cmdName == "help" {
+			m.helpTab = 0
+			m.mode = modeHelp
+			m.textInput.Blur()
+			return m, tea.Batch(cmds...)
 		}
 
 		if cmdName == "config" || cmdName == "settings" {
@@ -964,7 +987,13 @@ func (m model) View() string {
 
 	var b strings.Builder
 
-	// 0. Diff dialog (takes over the entire view).
+	// 0a. Help screen (takes over the entire view).
+	if m.mode == modeHelp {
+		b.WriteString(m.renderHelpScreen())
+		return b.String()
+	}
+
+	// 0b. Diff dialog (takes over the entire view).
 	if m.mode == modeDiff && m.diffData != nil {
 		b.WriteString(renderDiffView(m.diffData, m.diffSelected, m.diffViewMode, m.width))
 		return b.String()
