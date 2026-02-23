@@ -114,6 +114,11 @@ type model struct {
 	// Fast mode toggle.
 	fastMode bool
 
+	// Command queueing: users can type and submit messages while the agent
+	// is busy. These are stored here and automatically sent when the current
+	// turn completes.
+	queue inputQueue
+
 	// Initial prompt to send on start.
 	initialPrompt string
 
@@ -302,13 +307,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			errLine := errorStyle.Render("Error: " + msg.Err.Error())
 			cmds = append(cmds, tea.Println(errLine))
 		}
-		m.mode = modeInput
 		m.activeTool = ""
-		m.textInput.Focus()
+
 		// Refresh the custom status line after each assistant turn.
 		if cmd := m.refreshStatusLine(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+
+		// If there are queued messages, automatically send the next one
+		// instead of returning to input mode.
+		if text, ok := m.queue.Dequeue(); ok {
+			// Stay in streaming mode and submit the queued message.
+			return m.handleSubmit(text)
+		}
+
+		m.mode = modeInput
+		m.textInput.Focus()
 		return m, tea.Batch(append(cmds, textarea.Blink)...)
 
 	// ── Memory edit done ──
@@ -366,7 +380,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Pass other messages to the text input.
-	if m.mode == modeInput {
+	// During both modeInput and modeStreaming, forward to the textarea so
+	// users can type ahead while the agent is working.
+	if m.mode == modeInput || m.mode == modeStreaming {
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(msg)
 		cmds = append(cmds, cmd)
@@ -401,12 +417,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDiffKey(msg)
 
 	case modeStreaming:
-		// Ctrl+C during streaming cancels the loop.
-		if msg.Type == tea.KeyCtrlC {
-			m.cancelFn()
-			return m, nil
-		}
-		return m, nil
+		return m.handleStreamingKey(msg)
 
 	case modeInput:
 		switch msg.Type {
@@ -458,6 +469,53 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// handleStreamingKey processes key events while the agent is working.
+// Users can type ahead and press Enter to queue messages for when the
+// current turn finishes.
+func (m model) handleStreamingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		// Ctrl+C cancels the running loop and clears the queue.
+		m.queue.Clear()
+		m.cancelFn()
+		return m, nil
+
+	case tea.KeyEnter:
+		text := strings.TrimSpace(m.textInput.Value())
+		if text == "" {
+			return m, nil
+		}
+		m.textInput.Reset()
+
+		// Enqueue the message for processing after the current turn.
+		m.queue.Enqueue(text)
+
+		// Echo queued message to scrollback with a "queued" indicator.
+		userLine := queuedLabelStyle.Render("> ") + permHintStyle.Render(text) +
+			"  " + queuedBadgeStyle.Render("(queued)")
+		return m, tea.Println(userLine)
+
+	case tea.KeyEscape:
+		// Escape clears the current input being typed during streaming,
+		// or removes the last queued message if input is empty.
+		if strings.TrimSpace(m.textInput.Value()) != "" {
+			m.textInput.Reset()
+			return m, nil
+		}
+		if text, ok := m.queue.RemoveLast(); ok {
+			hint := permHintStyle.Render("Removed queued message: " + truncateText(text, 60))
+			return m, tea.Println(hint)
+		}
+		return m, nil
+
+	default:
+		// All other keys are forwarded to the textarea by the Update fallthrough.
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
 }
 
 // isExitCommand returns true if the input is a bare exit command.
@@ -610,6 +668,9 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 			// Clear todo list.
 			m.todos = nil
+
+			// Clear any queued messages.
+			m.queue.Clear()
 
 			// Create a new session, preserving the model and CWD.
 			if m.session != nil {
@@ -1097,16 +1158,25 @@ func (m model) View() string {
 	}
 
 	// 8. Input area with borders.
-	if m.mode == modeInput {
+	if m.mode == modeInput || (m.mode == modeStreaming && m.textInput.Value() != "") {
 		// Top border.
 		b.WriteString(renderInputBorder(m.width))
 		b.WriteString("\n")
 
-		// Set placeholder dynamically: show suggestion only when the
-		// conversation is empty and the input field is blank.
-		if m.submitCount < 1 && m.textInput.Value() == "" {
-			m.textInput.Placeholder = m.promptSuggestion
+		if m.mode == modeInput {
+			// Set placeholder dynamically: show suggestion only when the
+			// conversation is empty and the input field is blank.
+			if m.submitCount < 1 && m.textInput.Value() == "" {
+				if m.queue.Len() > 0 {
+					m.textInput.Placeholder = "Press Esc to remove queued messages"
+				} else {
+					m.textInput.Placeholder = m.promptSuggestion
+				}
+			} else {
+				m.textInput.Placeholder = ""
+			}
 		} else {
+			// Streaming mode — show a hint that input will be queued.
 			m.textInput.Placeholder = ""
 		}
 
@@ -1117,12 +1187,25 @@ func (m model) View() string {
 		b.WriteString(renderInputBorder(m.width))
 		b.WriteString("\n")
 
-		// Hints line: "? for shortcuts" (dimmed), shown when no completions
-		// are visible and no other state overrides it.
-		if len(m.completions) == 0 {
+		// Hints line below the input area.
+		if m.mode == modeInput && len(m.completions) == 0 {
 			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
 			b.WriteString("\n")
+		} else if m.mode == modeStreaming {
+			hint := "Enter to queue message"
+			if m.queue.Len() > 0 {
+				hint += fmt.Sprintf(" · %d queued", m.queue.Len())
+			}
+			b.WriteString("  " + shortcutsHintStyle.Render(hint))
+			b.WriteString("\n")
 		}
+	}
+
+	// 8b. Queue indicator when streaming and not actively typing.
+	if m.mode == modeStreaming && m.textInput.Value() == "" && m.queue.Len() > 0 {
+		b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
+			m.queue.Len(), pluralS(m.queue.Len()))))
+		b.WriteString("\n")
 	}
 
 	// 9. Status line (custom command output) or default status bar.
