@@ -42,22 +42,24 @@ func newSlashRegistry() *slashRegistry {
 		commands: make(map[string]SlashCommand),
 	}
 
-	// Session commands: clear, reset, new, resume, continue.
-	registerSessionCommands(r)
-
-	// Auth commands: login, logout.
-	registerAuthCommands(r)
-
-	// Info commands: version, cost, context, mcp, fast.
-	registerInfoCommands(r)
-
-	// UI commands: help, config/settings, model, diff, memory.
-	registerUICommands(r)
-
-	// Loop commands: compact, init, review.
-	registerLoopCommands(r)
-
-	// Exit commands: quit, exit.
+	registerClearCommand(r)
+	registerResumeCommand(r)
+	registerContinueCommand(r)
+	registerLoginCommand(r)
+	registerLogoutCommand(r)
+	registerVersionCommand(r)
+	registerCostCommand(r)
+	registerContextCommand(r)
+	registerMCPCommand(r)
+	registerFastCommand(r)
+	registerHelpCommand(r)
+	registerConfigCommand(r)
+	registerModelCommand(r)
+	registerDiffCommand(r)
+	registerMemoryCommand(r)
+	registerCompactCommand(r)
+	registerInitCommand(r)
+	registerReviewCommand(r)
 	registerExitCommands(r)
 
 	return r

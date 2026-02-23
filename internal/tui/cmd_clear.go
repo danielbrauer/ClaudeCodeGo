@@ -2,14 +2,13 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/bubbles/textarea"
 
 	"github.com/anthropics/claude-code-go/internal/conversation"
 	"github.com/anthropics/claude-code-go/internal/session"
 )
 
-// registerSessionCommands registers /clear, /reset, /new, /resume, /continue.
-func registerSessionCommands(r *slashRegistry) {
+// registerClearCommand registers /clear and its aliases /reset, /new.
+func registerClearCommand(r *slashRegistry) {
 	r.register(SlashCommand{
 		Name:        "clear",
 		Description: "Clear conversation history and free up context",
@@ -28,18 +27,6 @@ func registerSessionCommands(r *slashRegistry) {
 		Description: "Clear conversation history and free up context",
 		IsAlias:     true,
 		Execute:     executeClear,
-	})
-
-	r.register(SlashCommand{
-		Name:        "resume",
-		Description: "Resume a previous session",
-		Execute:     executeResume,
-	})
-
-	r.register(SlashCommand{
-		Name:        "continue",
-		Description: "Resume the most recent session",
-		Execute:     executeContinue,
 	})
 }
 
@@ -83,43 +70,4 @@ func executeClear(m *model, args string) (tea.Model, tea.Cmd) {
 
 	cmds = append(cmds, tea.Println("Conversation cleared. Starting fresh."))
 	return *m, tea.Batch(cmds...)
-}
-
-func executeResume(m *model, args string) (tea.Model, tea.Cmd) {
-	if m.sessStore == nil {
-		return *m, tea.Println(errorStyle.Render("Session store not available."))
-	}
-	sessions, err := m.sessStore.List()
-	if err != nil || len(sessions) == 0 {
-		return *m, tea.Println(errorStyle.Render("No sessions found."))
-	}
-	m.resumeSessions = sessions
-	m.resumeCursor = 0
-	m.mode = modeResume
-	m.textInput.Blur()
-	return *m, nil
-}
-
-func executeContinue(m *model, args string) (tea.Model, tea.Cmd) {
-	if m.sessStore == nil {
-		return *m, tea.Println(errorStyle.Render("Session store not available."))
-	}
-	sess, err := m.sessStore.MostRecent()
-	if err != nil {
-		return *m, tea.Println(errorStyle.Render("No previous session found."))
-	}
-	// Switch to the most recent session directly.
-	m.session.ID = sess.ID
-	m.session.Model = sess.Model
-	m.session.CWD = sess.CWD
-	m.session.Messages = sess.Messages
-	m.session.CreatedAt = sess.CreatedAt
-	m.session.UpdatedAt = sess.UpdatedAt
-	m.loop.History().SetMessages(sess.Messages)
-
-	summary := sessionSummary(sess)
-	line := resumeHeaderStyle.Render("Resumed session ") +
-		resumeIDStyle.Render(sess.ID) +
-		resumeHeaderStyle.Render(" ("+summary+")")
-	return *m, tea.Batch(tea.Println(line), textarea.Blink)
 }
