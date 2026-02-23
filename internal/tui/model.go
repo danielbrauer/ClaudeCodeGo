@@ -1033,12 +1033,13 @@ func (m model) View() string {
 		b.WriteString(renderInputBorder(m.width))
 		b.WriteString("\n")
 
-		// Hints line below the input area.
+		// Hints line: show suggestion accept hint when a dynamic suggestion
+		// is visible, otherwise show "? for shortcuts" only when input is empty.
 		if m.mode == modeInput && len(m.completions) == 0 {
 			if m.dynSuggestion != "" && m.textInput.Value() == "" {
 				b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
 				b.WriteString("\n")
-			} else {
+			} else if strings.TrimSpace(m.textInput.Value()) == "" {
 				b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
 				b.WriteString("\n")
 			}
@@ -1052,10 +1053,14 @@ func (m model) View() string {
 		}
 	}
 
-	// 8b. Queue indicator when streaming and not actively typing.
-	if m.mode == modeStreaming && m.textInput.Value() == "" && m.queue.Len() > 0 {
-		b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
-			m.queue.Len(), pluralS(m.queue.Len()))))
+	// 8b. Streaming hints: queue count and interrupt hint.
+	if m.mode == modeStreaming {
+		if m.textInput.Value() == "" && m.queue.Len() > 0 {
+			b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
+				m.queue.Len(), pluralS(m.queue.Len()))))
+			b.WriteString("\n")
+		}
+		b.WriteString("  " + shortcutsHintStyle.Render("esc to interrupt"))
 		b.WriteString("\n")
 	}
 
