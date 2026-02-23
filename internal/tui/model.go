@@ -101,6 +101,11 @@ type model struct {
 	configPanel *configPanel
 	settings    *config.Settings // reference to live settings
 
+	// Tab completion state for slash commands.
+	completions    []string // current fuzzy-matched completions
+	completionIdx  int      // selected index in completions (-1 = none)
+	completionBase string   // the original typed text (without leading /)
+
 	// Fast mode toggle.
 	fastMode bool
 
@@ -363,7 +368,21 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 
+		case tea.KeyTab:
+			return m.handleTabComplete()
+
+		case tea.KeyShiftTab:
+			return m.handleTabCompletePrev()
+
+		case tea.KeyEscape:
+			if len(m.completions) > 0 {
+				m.clearCompletions()
+				return m, nil
+			}
+			return m, nil
+
 		case tea.KeyEnter:
+			m.clearCompletions()
 			text := strings.TrimSpace(m.textInput.Value())
 			if text == "" {
 				return m, nil
@@ -374,6 +393,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.textInput, cmd = m.textInput.Update(msg)
+			// Clear completions when the user types — they'll re-trigger on Tab.
+			if len(m.completions) > 0 {
+				m.clearCompletions()
+			}
 			return m, cmd
 		}
 	}
@@ -410,6 +433,17 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		cmdName := strings.TrimPrefix(text, "/")
 		parts := strings.SplitN(cmdName, " ", 2)
 		cmdName = parts[0]
+
+		// Fuzzy auto-correct: if the command isn't an exact match, try to
+		// find the best fuzzy match and silently correct it.
+		if _, exact := m.slashReg.lookup(cmdName); !exact {
+			if best, ok := m.slashReg.fuzzyBest(cmdName); ok {
+				hint := permHintStyle.Render(fmt.Sprintf("  (corrected /%s → /%s)", cmdName, best))
+				cmds = append(cmds, tea.Println(hint))
+				cmdName = best
+				parts[0] = best
+			}
+		}
 
 		if cmdName == "quit" || cmdName == "exit" {
 			m.quitting = true
@@ -638,6 +672,73 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 	cmds = append(cmds, loopCmd, m.spinner.Tick)
 	return m, tea.Batch(cmds...)
+}
+
+// handleTabComplete triggers or cycles forward through fuzzy slash command completions.
+func (m model) handleTabComplete() (tea.Model, tea.Cmd) {
+	text := m.textInput.Value()
+
+	// Only complete when the input starts with "/".
+	if !strings.HasPrefix(text, "/") {
+		return m, nil
+	}
+
+	// Extract the command portion (no leading slash, no args).
+	raw := strings.TrimPrefix(text, "/")
+	parts := strings.SplitN(raw, " ", 2)
+	typed := parts[0]
+
+	// If we already have completions, cycle to the next one.
+	if len(m.completions) > 0 && m.completionBase == typed || len(m.completions) > 0 {
+		m.completionIdx = (m.completionIdx + 1) % len(m.completions)
+		m.applyCompletion()
+		return m, nil
+	}
+
+	// Build new completions.
+	matches := m.slashReg.fuzzyComplete(typed)
+	if len(matches) == 0 {
+		return m, nil
+	}
+
+	m.completionBase = typed
+	m.completions = matches
+	m.completionIdx = 0
+	m.applyCompletion()
+	return m, nil
+}
+
+// handleTabCompletePrev cycles backward through completions (Shift+Tab).
+func (m model) handleTabCompletePrev() (tea.Model, tea.Cmd) {
+	if len(m.completions) == 0 {
+		// Start fresh same as Tab.
+		return m.handleTabComplete()
+	}
+	m.completionIdx--
+	if m.completionIdx < 0 {
+		m.completionIdx = len(m.completions) - 1
+	}
+	m.applyCompletion()
+	return m, nil
+}
+
+// applyCompletion replaces the text input content with the selected completion.
+func (m *model) applyCompletion() {
+	if m.completionIdx < 0 || m.completionIdx >= len(m.completions) {
+		return
+	}
+	completed := "/" + m.completions[m.completionIdx]
+	m.textInput.Reset()
+	m.textInput.SetValue(completed)
+	// Move cursor to end.
+	m.textInput.CursorEnd()
+}
+
+// clearCompletions resets completion state.
+func (m *model) clearCompletions() {
+	m.completions = nil
+	m.completionIdx = -1
+	m.completionBase = ""
 }
 
 // handlePermissionKey processes key events during a permission prompt.
@@ -918,14 +1019,47 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// 7. Input area.
+	// 7. Completion suggestions (shown above the input).
+	if m.mode == modeInput && len(m.completions) > 0 {
+		b.WriteString(m.renderCompletions())
+	}
+
+	// 8. Input area.
 	if m.mode == modeInput {
 		b.WriteString(m.textInput.View())
 		b.WriteString("\n")
 	}
 
-	// 8. Status bar.
+	// 9. Status bar.
 	b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
+
+	return b.String()
+}
+
+// renderCompletions renders the inline completion suggestions.
+func (m model) renderCompletions() string {
+	var b strings.Builder
+	maxShow := 8
+	if len(m.completions) < maxShow {
+		maxShow = len(m.completions)
+	}
+
+	for i := 0; i < maxShow; i++ {
+		name := m.completions[i]
+		desc := ""
+		if cmd, ok := m.slashReg.lookup(name); ok {
+			desc = cmd.Description
+		}
+		if i == m.completionIdx {
+			b.WriteString(askSelectedStyle.Render("  > /"+name) + " " + permHintStyle.Render(desc) + "\n")
+		} else {
+			b.WriteString(permHintStyle.Render("    /"+name+" "+desc) + "\n")
+		}
+	}
+
+	if len(m.completions) > maxShow {
+		b.WriteString(permHintStyle.Render(fmt.Sprintf("    ... and %d more", len(m.completions)-maxShow)) + "\n")
+	}
 
 	return b.String()
 }
