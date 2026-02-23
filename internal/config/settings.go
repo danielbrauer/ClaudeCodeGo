@@ -62,6 +62,17 @@ type rawSettings struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Hooks       json.RawMessage   `json:"hooks,omitempty"`
 	Sandbox     json.RawMessage   `json:"sandbox,omitempty"`
+
+	// User-facing preferences.
+	AutoCompactEnabled *bool  `json:"autoCompactEnabled,omitempty"`
+	Verbose            *bool  `json:"verbose,omitempty"`
+	ThinkingEnabled    *bool  `json:"thinkingEnabled,omitempty"`
+	EditorMode         string `json:"editorMode,omitempty"`
+	DiffTool           string `json:"diffTool,omitempty"`
+	NotifChannel       string `json:"notifChannel,omitempty"`
+	Theme              string `json:"theme,omitempty"`
+	RespectGitignore   *bool  `json:"respectGitignore,omitempty"`
+	FastMode           *bool  `json:"fastMode,omitempty"`
 }
 
 // LoadSettings loads and merges settings from all five levels.
@@ -118,10 +129,19 @@ func loadSettingsFile(path string) (*Settings, error) {
 	}
 
 	s := &Settings{
-		Model:   raw.Model,
-		Env:     raw.Env,
-		Hooks:   raw.Hooks,
-		Sandbox: raw.Sandbox,
+		Model:              raw.Model,
+		Env:                raw.Env,
+		Hooks:              raw.Hooks,
+		Sandbox:            raw.Sandbox,
+		AutoCompactEnabled: raw.AutoCompactEnabled,
+		Verbose:            raw.Verbose,
+		ThinkingEnabled:    raw.ThinkingEnabled,
+		EditorMode:         raw.EditorMode,
+		DiffTool:           raw.DiffTool,
+		NotifChannel:       raw.NotifChannel,
+		Theme:              raw.Theme,
+		RespectGitignore:   raw.RespectGitignore,
+		FastMode:           raw.FastMode,
 	}
 
 	// Parse permissions: try JS format first, then Go format.
