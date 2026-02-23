@@ -235,6 +235,39 @@ func (r *slashRegistry) complete(prefix string) []string {
 	return matches
 }
 
+// fuzzyComplete returns command names that fuzzy-match the given input,
+// ordered by match quality (best first). Prefix matches are tried first;
+// if none are found, fuzzy subsequence matching is used.
+func (r *slashRegistry) fuzzyComplete(input string) []string {
+	// Try exact prefix matches first.
+	if prefixMatches := r.complete(input); len(prefixMatches) > 0 {
+		return prefixMatches
+	}
+
+	// Fall back to fuzzy matching.
+	ranked := fuzzyRankCandidates(input, r.names)
+	result := make([]string, len(ranked))
+	for i, r := range ranked {
+		result[i] = r.Name
+	}
+	return result
+}
+
+// fuzzyBest returns the single best fuzzy match for input, or ("", false)
+// if nothing matches. Used for auto-correcting misspelled commands on Enter.
+func (r *slashRegistry) fuzzyBest(input string) (string, bool) {
+	// Exact match is always best.
+	if _, ok := r.commands[input]; ok {
+		return input, true
+	}
+
+	matches := r.fuzzyComplete(input)
+	if len(matches) > 0 {
+		return matches[0], true
+	}
+	return "", false
+}
+
 // registerSkills adds slash commands for skills that have triggers.
 // Each skill slash command is flagged as a "skill command" so handleSubmit
 // can send the skill's content as a user message to the loop.
