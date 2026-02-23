@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -191,7 +190,7 @@ func renderPermissionPrompt(toolName, summary string, suggestions []config.Permi
 
 	result := title + "\n" + tool
 	if summary != "" {
-		result += "\n  " + toolSummaryStyle.Render(summary)
+		result += "\n  " + permSummaryStyle.Render(summary)
 	}
 
 	// Show suggestion hint if available.
@@ -200,14 +199,14 @@ func renderPermissionPrompt(toolName, summary string, suggestions []config.Permi
 		result += "\n" + permHintStyle.Render("  Rule: "+ruleStr)
 	}
 
-	// Build hint line with available actions.
-	var actions []string
-	actions = append(actions, "y to allow")
-	actions = append(actions, "n to deny")
+	// Build hint line with highlighted key letters.
+	hint := "  Press " +
+		permKeyStyle.Render("y") + permActionStyle.Render(" to allow, ") +
+		permKeyStyle.Render("n") + permActionStyle.Render(" to deny")
 	if len(suggestions) > 0 {
-		actions = append(actions, "a to always allow")
+		hint += permActionStyle.Render(", ") +
+			permKeyStyle.Render("a") + permActionStyle.Render(" to always allow")
 	}
-	hint := permHintStyle.Render("  Press " + strings.Join(actions, ", "))
 	result += "\n" + hint
 
 	return result
