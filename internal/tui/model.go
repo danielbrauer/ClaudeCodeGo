@@ -967,17 +967,23 @@ func (m model) View() string {
 		b.WriteString(renderInputBorder(m.width))
 		b.WriteString("\n")
 
-		// Hints line: show suggestion accept hint when a suggestion is
-		// visible, otherwise show "? for shortcuts".
+		// Hints line: show suggestion accept hint when a dynamic suggestion
+		// is visible, otherwise show "? for shortcuts" only when input is empty.
 		if len(m.completions) == 0 {
 			if m.dynSuggestion != "" && m.textInput.Value() == "" {
 				b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
 				b.WriteString("\n")
-			} else {
+			} else if strings.TrimSpace(m.textInput.Value()) == "" {
 				b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
 				b.WriteString("\n")
 			}
 		}
+	}
+
+	// 8b. Streaming hint: "esc to interrupt" shown while the agent is running.
+	if m.mode == modeStreaming {
+		b.WriteString("  " + shortcutsHintStyle.Render("esc to interrupt"))
+		b.WriteString("\n")
 	}
 
 	// 9. Status line (custom command output) or default status bar.
