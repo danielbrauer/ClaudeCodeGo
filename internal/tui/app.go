@@ -36,6 +36,8 @@ type AppConfig struct {
 	SessStore     *session.Store
 	Version       string
 	Model         string
+	Cwd           string                             // working directory, shown in startup banner
+	BillingType   string                             // subscription display name (e.g. "Claude Pro"); may be empty
 	PrintMode     bool
 	MCPManager    MCPStatus                          // *mcp.Manager; nil if no MCP servers configured
 	Skills        []skills.Skill                     // Phase 7: loaded skills for slash command registration
@@ -122,9 +124,19 @@ func (a *App) Run(ctx context.Context) error {
 	permHandler := NewTUIPermissionHandler(p, a.cfg.RuleHandler)
 	a.cfg.Loop.SetPermissionHandler(permHandler)
 
-	// Print the banner to scrollback before starting.
-	fmt.Printf("\nclaude %s (Go) | model: %s\n", a.cfg.Version, a.cfg.Model)
-	fmt.Println("Type your message. Press Ctrl+C to exit.")
+	// Print the banner to scrollback before starting (matches JS version layout).
+	modelDisplay := api.ModelDisplayName(a.cfg.Model)
+	fmt.Println()
+	fmt.Printf("\033[1m✻ Claude Code\033[0m v%s\n", a.cfg.Version)
+	if a.cfg.BillingType != "" {
+		fmt.Printf("  %s · %s\n", modelDisplay, a.cfg.BillingType)
+	} else {
+		fmt.Printf("  %s\n", modelDisplay)
+	}
+	cwdDisplay := shortenPath(a.cfg.Cwd)
+	if cwdDisplay != "" {
+		fmt.Printf("  %s\n", cwdDisplay)
+	}
 	fmt.Println()
 
 	// Run the BT event loop (blocks until quit).

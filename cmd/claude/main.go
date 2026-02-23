@@ -102,6 +102,12 @@ func main() {
 		tokenProvider = auth.NewTokenProvider(store)
 	}
 
+	// Determine billing/subscription display name for the startup banner.
+	var billingType string
+	if tokens, err := store.Load(); err == nil && tokens.SubscriptionType != "" {
+		billingType = auth.SubscriptionDisplayName(tokens.SubscriptionType)
+	}
+
 	// Working directory.
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -346,15 +352,17 @@ func main() {
 
 	// Interactive mode: launch the TUI.
 	app := tui.New(tui.AppConfig{
-		Loop:       loop,
-		Session:    currentSession,
-		SessStore:  sessionStore,
-		Version:    version,
-		Model:      model,
-		MCPManager: mcpManager,
-		Skills:     loadedSkills,  // Phase 7
-		Hooks:      hookRunner,    // Phase 7
-		Settings:   settings,
+		Loop:        loop,
+		Session:     currentSession,
+		SessStore:   sessionStore,
+		Version:     version,
+		Model:       model,
+		Cwd:         cwd,
+		BillingType: billingType,
+		MCPManager:  mcpManager,
+		Skills:      loadedSkills,  // Phase 7
+		Hooks:       hookRunner,    // Phase 7
+		Settings:    settings,
 		RuleHandler: ruleHandler,
 		OnModelSwitch: func(newModel string) {
 			if currentSession != nil {
