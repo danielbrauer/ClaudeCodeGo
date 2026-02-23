@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 const (
@@ -111,13 +112,19 @@ func (c *Client) CreateMessageStream(
 	}
 	req.Stream = true
 
+	// Collect extra beta headers needed for this request.
+	var extraBetas []string
+	if req.Speed == "fast" {
+		extraBetas = append(extraBetas, FastModeBeta)
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
 	// Issue 15: 401 auto-retry loop. Attempts at most 2 requests.
-	resp, err := c.doAPIRequest(ctx, body)
+	resp, err := c.doAPIRequest(ctx, body, extraBetas)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +147,7 @@ func (c *Client) CreateMessageStream(
 // doAPIRequest sends the API request with auth headers. On a 401 response,
 // it invalidates the token, refreshes, and retries once.
 // Issue 15: 401 auto-retry on API calls.
-func (c *Client) doAPIRequest(ctx context.Context, body []byte) (*http.Response, error) {
+func (c *Client) doAPIRequest(ctx context.Context, body []byte, extraBetas []string) (*http.Response, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := c.tokenSource.GetAccessToken(ctx)
 		if err != nil {
@@ -157,7 +164,9 @@ func (c *Client) doAPIRequest(ctx context.Context, body []byte) (*http.Response,
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("anthropic-version", c.apiVersion)
-		httpReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+		betaValues := []string{"claude-code-20250219", "oauth-2025-04-20"}
+		betaValues = append(betaValues, extraBetas...)
+		httpReq.Header.Set("anthropic-beta", strings.Join(betaValues, ","))
 		httpReq.Header.Set("x-app", "cli")
 		// Issue 14: User-Agent header.
 		httpReq.Header.Set("User-Agent", c.userAgent)

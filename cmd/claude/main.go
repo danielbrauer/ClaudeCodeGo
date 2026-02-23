@@ -265,6 +265,14 @@ func main() {
 	// Create compactor for auto-compaction.
 	compactor := conversation.NewCompactor(client)
 
+	// Resolve fast mode from settings.
+	fastMode := settings.FastMode != nil && *settings.FastMode
+	if fastMode && !api.IsOpus46Model(model) {
+		// Fast mode requires Opus 4.6; switch if needed.
+		model = api.ModelAliases[api.FastModeModelAlias]
+		client.SetModel(model)
+	}
+
 	// Create conversation loop with tools.
 	// In TUI mode, the handler and permission handler will be replaced by app.Run().
 	// In print mode, use the simple PrintStreamHandler.
@@ -288,6 +296,7 @@ func main() {
 			}
 		},
 	})
+	loop.SetFastMode(fastMode)
 
 	// Handle initial prompt from arguments.
 	args := flag.Args()
@@ -353,6 +362,8 @@ func main() {
 			}
 		},
 		LogoutFunc: func() error { return store.Delete() },
+		FastMode:   fastMode,
+		Client:     client,
 	})
 
 	if initialPrompt != "" {

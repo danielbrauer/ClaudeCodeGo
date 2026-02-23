@@ -6,13 +6,14 @@ import "github.com/charmbracelet/lipgloss"
 // it straightforward to add dark/light mode support later.
 var (
 	// Colors.
-	colorPurple  = lipgloss.Color("#A855F7")
-	colorGreen   = lipgloss.Color("#22C55E")
-	colorRed     = lipgloss.Color("#EF4444")
-	colorYellow  = lipgloss.Color("#EAB308")
-	colorDim     = lipgloss.Color("#6B7280")
-	colorCyan    = lipgloss.Color("#06B6D4")
-	colorWhite   = lipgloss.Color("#F9FAFB")
+	colorPurple   = lipgloss.Color("#A855F7")
+	colorGreen    = lipgloss.Color("#22C55E")
+	colorRed      = lipgloss.Color("#EF4444")
+	colorYellow   = lipgloss.Color("#EAB308")
+	colorDim      = lipgloss.Color("#6B7280")
+	colorCyan     = lipgloss.Color("#06B6D4")
+	colorWhite    = lipgloss.Color("#F9FAFB")
+	colorOrange   = lipgloss.Color("#FF6A00")
 
 	// Prompt styles.
 	promptStyle = lipgloss.NewStyle().
@@ -71,6 +72,11 @@ var (
 	askQuestionStyle = lipgloss.NewStyle().Foreground(colorWhite)
 	askOptionStyle   = lipgloss.NewStyle().Foreground(colorDim)
 	askSelectedStyle = lipgloss.NewStyle().Foreground(colorPurple).Bold(true)
+
+	// Fast mode indicator.
+	fastModeStyle = lipgloss.NewStyle().
+			Foreground(colorOrange).
+			Bold(true)
 
 	// User input echo.
 	userLabelStyle = lipgloss.NewStyle().

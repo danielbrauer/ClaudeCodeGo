@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
+	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/conversation"
 	"github.com/anthropics/claude-code-go/internal/session"
@@ -43,6 +44,8 @@ type AppConfig struct {
 	RuleHandler   *config.RuleBasedPermissionHandler // Rule-based permission handler from main; may be nil
 	OnModelSwitch func(newModel string)              // called when user switches model via /model
 	LogoutFunc    func() error                       // Called when the user types /logout to clear credentials.
+	FastMode      bool                               // initial fast mode state from settings
+	Client        *api.Client                        // API client for model switching
 }
 
 // App is the top-level TUI application. main.go creates it and calls Run.
@@ -101,7 +104,9 @@ func (a *App) Run(ctx context.Context) error {
 		a.cfg.Settings,
 		a.cfg.OnModelSwitch,
 		a.cfg.LogoutFunc,
+		a.cfg.FastMode,
 	)
+	m.apiClient = a.cfg.Client
 
 	// Create the BT program (inline mode, no alt screen).
 	// Bracketed paste is enabled by default in bubbletea v1.x.

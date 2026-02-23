@@ -1,7 +1,10 @@
 // Package api implements the Claude Messages API client.
 package api
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Model identifiers.
 const (
@@ -9,6 +12,16 @@ const (
 	ModelClaude46Sonnet = "claude-sonnet-4-6"
 	ModelClaude45Haiku  = "claude-haiku-4-5-20251001"
 )
+
+// FastModeModelAlias is the model alias the /fast toggle sets when the
+// current model is not eligible for fast mode.
+const FastModeModelAlias = "opus"
+
+// FastModeDisplayName is the human-readable name shown in fast mode messages.
+const FastModeDisplayName = "Opus 4.6"
+
+// FastModeBeta is the beta header value required for fast mode.
+const FastModeBeta = "fast-mode-2026-02-01"
 
 // Friendly model name mapping.
 var ModelAliases = map[string]string{
@@ -51,6 +64,12 @@ func ResolveModelAlias(input string) string {
 	return input
 }
 
+// IsOpus46Model returns true if the given model ID is eligible for fast mode
+// (i.e., it's an Opus 4.6 model).
+func IsOpus46Model(model string) bool {
+	return strings.Contains(strings.ToLower(model), "opus-4-6")
+}
+
 // Role constants for messages.
 const (
 	RoleUser      = "user"
@@ -86,6 +105,7 @@ type CreateMessageRequest struct {
 	Temp      *float64          `json:"temperature,omitempty"`
 	TopP      *float64          `json:"top_p,omitempty"`
 	TopK      *int              `json:"top_k,omitempty"`
+	Speed string `json:"speed,omitempty"`
 }
 
 // RequestMetadata holds metadata sent with API requests.
