@@ -13,13 +13,13 @@ func (m model) View() string {
 
 	var b strings.Builder
 
-	// 0a. Help screen (takes over the entire view).
+	// Help screen (takes over the entire view).
 	if m.mode == modeHelp {
 		b.WriteString(m.renderHelpScreen())
 		return b.String()
 	}
 
-	// 0b. Diff dialog (takes over the entire view).
+	// Diff dialog (takes over the entire view).
 	if m.mode == modeDiff && m.diffData != nil {
 		b.WriteString(renderDiffView(m.diffData, m.diffSelected, m.diffViewMode, m.width))
 		return b.String()
@@ -31,14 +31,14 @@ func (m model) View() string {
 		return b.String()
 	}
 
-	// 1. Streaming text (during API response).
+	// Streaming text (during API response).
 	if m.streamingText != "" {
 		rendered := m.mdRenderer.render(m.streamingText)
 		b.WriteString(rendered)
 		b.WriteString("\n")
 	}
 
-	// 2. Active tool spinner.
+	// Active tool spinner.
 	if m.activeTool != "" {
 		b.WriteString(m.spinner.View())
 		b.WriteString(" ")
@@ -53,7 +53,7 @@ func (m model) View() string {
 		b.WriteString(" Thinking...\n")
 	}
 
-	// 3. Config panel.
+	// Config panel.
 	if m.mode == modeConfig && m.configPanel != nil {
 		b.WriteString(m.renderConfigPanel())
 		b.WriteString("\n")
@@ -62,46 +62,46 @@ func (m model) View() string {
 		return b.String()
 	}
 
-	// 4. Permission prompt.
+	// Permission prompt.
 	if m.permissionPending != nil {
 		b.WriteString(renderPermissionPrompt(m.permissionPending.ToolName, m.permissionPending.Summary, m.permissionPending.Suggestions))
 		b.WriteString("\n")
 	}
 
-	// 4. AskUser prompt.
+	// AskUser prompt.
 	if m.askUserPending != nil && m.askQuestionIdx < len(m.askUserPending.Questions) {
 		b.WriteString(m.renderAskUserPrompt())
 		b.WriteString("\n")
 	}
 
-	// 5. Resume session picker.
+	// Resume session picker.
 	if m.mode == modeResume && len(m.resumeSessions) > 0 {
 		b.WriteString(m.renderResumePicker())
 	}
 
-	// 5. Model picker.
+	// Model picker.
 	if m.mode == modeModelPicker {
 		b.WriteString(m.renderModelPicker())
 		b.WriteString("\n")
 	}
 
-	// 6. Todo list.
+	// Todo list.
 	if len(m.todos) > 0 {
 		b.WriteString(renderTodoList(m.todos))
 		b.WriteString("\n")
 	}
 
-	// 7. Completion suggestions (shown above the input).
+	// Completion suggestions (shown above the input).
 	if m.mode == modeInput && len(m.completions) > 0 {
 		b.WriteString(m.renderCompletions())
 	}
 
-	// 8. Input area with borders.
+	// Input area with borders.
 	if m.mode == modeInput || (m.mode == modeStreaming && m.textInput.Value() != "") {
 		b.WriteString(m.renderInputArea())
 	}
 
-	// 8b. Streaming hints: queue count and interrupt hint.
+	// Streaming hints: queue count and interrupt hint.
 	if m.mode == modeStreaming {
 		if m.textInput.Value() == "" && m.queue.Len() > 0 {
 			b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
@@ -112,7 +112,7 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// 9. Status line (custom command output) or default status bar.
+	// Status line (custom command output) or default status bar.
 	if m.statusLineText != "" {
 		b.WriteString(statusBarStyle.Render(m.statusLineText))
 	} else {
