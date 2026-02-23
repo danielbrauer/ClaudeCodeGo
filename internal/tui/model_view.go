@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -102,14 +101,8 @@ func (m model) View() string {
 	}
 
 	// Streaming hints: queue count and interrupt hint.
-	if m.mode == modeStreaming {
-		if m.textInput.Value() == "" && m.queue.Len() > 0 {
-			b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
-				m.queue.Len(), pluralS(m.queue.Len()))))
-			b.WriteString("\n")
-		}
-		b.WriteString("  " + shortcutsHintStyle.Render("esc to interrupt"))
-		b.WriteString("\n")
+	if extra := m.streamingExtraHint(); extra != "" {
+		b.WriteString(extra)
 	}
 
 	// Status line (custom command output) or default status bar.
@@ -161,21 +154,8 @@ func (m model) renderInputArea() string {
 	b.WriteString(renderInputBorder(m.width))
 	b.WriteString("\n")
 
-	// Hints line: show suggestion accept hint when a dynamic suggestion
-	// is visible, otherwise show "? for shortcuts" only when input is empty.
-	if m.mode == modeInput && len(m.completions) == 0 {
-		if m.dynSuggestion != "" && m.textInput.Value() == "" {
-			b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
-			b.WriteString("\n")
-		} else if strings.TrimSpace(m.textInput.Value()) == "" {
-			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
-			b.WriteString("\n")
-		}
-	} else if m.mode == modeStreaming {
-		hint := "Enter to queue message"
-		if m.queue.Len() > 0 {
-			hint += fmt.Sprintf(" · %d queued", m.queue.Len())
-		}
+	// Hints line below the input area (centralised in hints.go).
+	if hint := m.inputAreaHint(); hint != "" {
 		b.WriteString("  " + shortcutsHintStyle.Render(hint))
 		b.WriteString("\n")
 	}

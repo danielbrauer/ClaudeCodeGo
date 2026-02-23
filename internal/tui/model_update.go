@@ -155,6 +155,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeDiff
 		return m, nil
 
+	// ── Ctrl-C double-press timeout ──
+	case ctrlCResetMsg:
+		m.ctrlCPending = false
+		return m, nil
+
 	// ── Spinner tick ──
 	case spinner.TickMsg:
 		var cmd tea.Cmd
