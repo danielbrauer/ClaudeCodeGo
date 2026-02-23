@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -231,6 +232,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.Focus()
 		return m, tea.Batch(append(cmds, textarea.Blink)...)
 
+	// ── Memory edit done ──
+	case MemoryEditDoneMsg:
+		var output string
+		if msg.Err != nil {
+			output = "Editor exited with error: " + msg.Err.Error()
+		} else {
+			output = editorHintMessage(msg.Path)
+		}
+		m.mode = modeInput
+		m.textInput.Focus()
+		return m, tea.Batch(tea.Println(output), textarea.Blink)
+
 	// ── Permission prompt ──
 	case PermissionRequestMsg:
 		m.permissionPending = &msg
@@ -378,6 +391,35 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 				}
 				return LoopDoneMsg{}
 			}
+		}
+
+		if cmdName == "memory" {
+			arg := ""
+			if len(parts) > 1 {
+				arg = strings.TrimSpace(parts[1])
+			}
+			cwd, _ := os.Getwd()
+			filePath := memoryFilePath(arg, cwd)
+			editorCmd, err := editorCommand(filePath)
+			if err != nil {
+				cmds = append(cmds, tea.Println("Error: "+err.Error()))
+				return m, tea.Batch(cmds...)
+			}
+			execCb := func(err error) tea.Msg {
+				return MemoryEditDoneMsg{Path: filePath, Err: err}
+			}
+			return m, tea.Batch(append(cmds, tea.ExecProcess(editorCmd, execCb))...)
+		}
+
+		if cmdName == "init" {
+			m.mode = modeStreaming
+			m.textInput.Blur()
+			loopCmd := func() tea.Msg {
+				err := m.loop.SendMessage(m.ctx, initPrompt)
+				return LoopDoneMsg{Err: err}
+			}
+			cmds = append(cmds, loopCmd, m.spinner.Tick)
+			return m, tea.Batch(cmds...)
 		}
 
 		if cmdName == "model" {

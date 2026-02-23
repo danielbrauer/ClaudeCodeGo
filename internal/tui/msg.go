@@ -70,3 +70,9 @@ type PermissionRequestMsg struct {
 type SubmitInputMsg struct {
 	Text string
 }
+
+// MemoryEditDoneMsg is sent when the external editor returns after /memory.
+type MemoryEditDoneMsg struct {
+	Path string
+	Err  error
+}
