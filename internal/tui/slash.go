@@ -14,6 +14,9 @@ import (
 type SlashCommand struct {
 	Name        string
 	Description string
+	IsHidden    bool                  // hidden commands are not shown in the help screen
+	IsAlias     bool                  // alias commands (e.g. exit→quit) are hidden from help
+	IsSkill     bool                  // true for commands added via registerSkills (shown in custom-commands tab)
 	Execute     func(m *model) string // returns output text to Println
 }
 
@@ -31,10 +34,8 @@ func newSlashRegistry() *slashRegistry {
 
 	r.register(SlashCommand{
 		Name:        "help",
-		Description: "Show available commands",
-		Execute: func(m *model) string {
-			return m.slashReg.helpText()
-		},
+		Description: "Show help and available commands",
+		Execute:     nil, // handled specially in handleSubmit (opens help screen)
 	})
 
 	r.register(SlashCommand{
@@ -96,6 +97,7 @@ func newSlashRegistry() *slashRegistry {
 	r.register(SlashCommand{
 		Name:        "settings",
 		Description: "Open config panel",
+		IsAlias:     true,
 		Execute:     nil, // alias for config
 	})
 
@@ -108,12 +110,14 @@ func newSlashRegistry() *slashRegistry {
 	r.register(SlashCommand{
 		Name:        "reset",
 		Description: "Clear conversation history and free up context",
+		IsAlias:     true,
 		Execute:     nil, // alias for clear
 	})
 
 	r.register(SlashCommand{
 		Name:        "new",
 		Description: "Clear conversation history and free up context",
+		IsAlias:     true,
 		Execute:     nil, // alias for clear
 	})
 
@@ -196,6 +200,7 @@ func newSlashRegistry() *slashRegistry {
 	r.register(SlashCommand{
 		Name:        "exit",
 		Description: "Exit the program",
+		IsAlias:     true,
 		Execute:     nil, // alias for quit
 	})
 
@@ -271,6 +276,7 @@ func (r *slashRegistry) registerSkills(loadedSkills []skills.Skill) {
 		r.register(SlashCommand{
 			Name:        name,
 			Description: s.Description,
+			IsSkill:     true,
 			Execute: func(m *model) string {
 				// Return the skill content as a sentinel — handleSubmit
 				// will detect this prefix and send it as a message.
@@ -285,16 +291,26 @@ func (r *slashRegistry) registerSkills(loadedSkills []skills.Skill) {
 // the remainder is sent as a user message to the agentic loop.
 const skillCommandPrefix = "\x00SKILL:"
 
+// visibleCommands returns all commands that should be shown in the help screen,
+// filtering out aliases and hidden commands. Commands are returned in sorted order.
+func (r *slashRegistry) visibleCommands() []SlashCommand {
+	var cmds []SlashCommand
+	for _, name := range r.names {
+		cmd := r.commands[name]
+		if cmd.IsAlias || cmd.IsHidden {
+			continue
+		}
+		cmds = append(cmds, cmd)
+	}
+	return cmds
+}
+
 // helpText returns formatted help output.
 func (r *slashRegistry) helpText() string {
 	var b strings.Builder
 	b.WriteString("Available commands:\n")
-	for _, name := range r.names {
-		if name == "exit" || name == "reset" || name == "new" || name == "settings" {
-			continue // don't show aliases
-		}
-		cmd := r.commands[name]
-		b.WriteString(fmt.Sprintf("  /%-12s %s\n", name, cmd.Description))
+	for _, cmd := range r.visibleCommands() {
+		b.WriteString(fmt.Sprintf("  /%-12s %s\n", cmd.Name, cmd.Description))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
