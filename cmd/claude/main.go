@@ -151,18 +151,16 @@ func main() {
 
 	// Set up permission handler with rule-based evaluation.
 	var permHandler tools.PermissionHandler
+	var ruleHandler *config.RuleBasedPermissionHandler
 	if *dangerousNoPermissions {
 		permHandler = &tools.AlwaysAllowPermissionHandler{}
 	} else {
 		terminalHandler := tools.NewTerminalPermissionHandler()
-		if len(settings.Permissions) > 0 {
-			permHandler = config.NewRuleBasedPermissionHandler(
-				settings.Permissions,
-				terminalHandler,
-			)
-		} else {
-			permHandler = terminalHandler
-		}
+		ruleHandler = config.NewRuleBasedPermissionHandler(
+			settings.Permissions,
+			terminalHandler,
+		)
+		permHandler = ruleHandler
 	}
 
 	// Background task store shared by Agent, TaskOutput, and TaskStop tools.
@@ -347,6 +345,7 @@ func main() {
 		MCPManager: mcpManager,
 		Skills:     loadedSkills,  // Phase 7
 		Hooks:      hookRunner,    // Phase 7
+		RuleHandler: ruleHandler,
 		OnModelSwitch: func(newModel string) {
 			if currentSession != nil {
 				currentSession.Model = newModel

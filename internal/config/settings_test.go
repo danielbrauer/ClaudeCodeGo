@@ -157,6 +157,98 @@ func TestPermissionRulesMerge(t *testing.T) {
 	}
 }
 
+func TestLoadSettingsJSPermissions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cwd := t.TempDir()
+	projDir := filepath.Join(cwd, ".claude")
+	os.MkdirAll(projDir, 0755)
+
+	// JS format permissions.
+	os.WriteFile(filepath.Join(projDir, "settings.json"), []byte(`{
+		"permissions": {
+			"allow": ["Bash(npm:*)", "Read(src/**)"],
+			"deny": ["Bash(rm *)"],
+			"ask": ["WebFetch(domain:unknown.com)"]
+		}
+	}`), 0644)
+
+	settings, err := LoadSettings(cwd)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+
+	if len(settings.Permissions) != 4 {
+		t.Fatalf("Permissions len = %d, want 4", len(settings.Permissions))
+	}
+
+	// Check that rules are parsed correctly.
+	var allowCount, denyCount, askCount int
+	for _, rule := range settings.Permissions {
+		switch rule.Action {
+		case "allow":
+			allowCount++
+		case "deny":
+			denyCount++
+		case "ask":
+			askCount++
+		}
+	}
+	if allowCount != 2 {
+		t.Errorf("allow count = %d, want 2", allowCount)
+	}
+	if denyCount != 1 {
+		t.Errorf("deny count = %d, want 1", denyCount)
+	}
+	if askCount != 1 {
+		t.Errorf("ask count = %d, want 1", askCount)
+	}
+}
+
+func TestLoadSettingsJSAndGoPermissionsMerge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cwd := t.TempDir()
+	projDir := filepath.Join(cwd, ".claude")
+	os.MkdirAll(projDir, 0755)
+
+	// User-level with Go format.
+	userDir := filepath.Join(home, ".claude")
+	os.MkdirAll(userDir, 0755)
+	os.WriteFile(filepath.Join(userDir, "settings.json"), []byte(`{
+		"permissions": [
+			{"tool": "Bash", "action": "ask"}
+		]
+	}`), 0644)
+
+	// Project-level with JS format.
+	os.WriteFile(filepath.Join(projDir, "settings.json"), []byte(`{
+		"permissions": {
+			"allow": ["Bash(npm:*)"]
+		}
+	}`), 0644)
+
+	settings, err := LoadSettings(cwd)
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+
+	// Should have both rules: project first, then user.
+	if len(settings.Permissions) != 2 {
+		t.Fatalf("Permissions len = %d, want 2", len(settings.Permissions))
+	}
+	// Project rule (JS format) first.
+	if settings.Permissions[0].Tool != "Bash" || settings.Permissions[0].Pattern != "npm:*" {
+		t.Errorf("First rule: %+v", settings.Permissions[0])
+	}
+	// User rule (Go format) second.
+	if settings.Permissions[1].Tool != "Bash" || settings.Permissions[1].Action != "ask" {
+		t.Errorf("Second rule: %+v", settings.Permissions[1])
+	}
+}
+
 func TestMergeSettings(t *testing.T) {
 	base := &Settings{
 		Model: "sonnet",

@@ -63,17 +63,35 @@ func summarizeToolInput(toolName string, input json.RawMessage) string {
 			}
 			return fmt.Sprintf("$ %s", s)
 		}
-	case "FileWrite":
+	case "FileWrite", "Write":
 		if fp, ok := m["file_path"]; ok {
 			var s string
 			json.Unmarshal(fp, &s)
 			return fmt.Sprintf("Write to: %s", s)
 		}
-	case "FileEdit":
+	case "FileEdit", "Edit":
 		if fp, ok := m["file_path"]; ok {
 			var s string
 			json.Unmarshal(fp, &s)
 			return fmt.Sprintf("Edit: %s", s)
+		}
+	case "WebFetch":
+		if u, ok := m["url"]; ok {
+			var s string
+			json.Unmarshal(u, &s)
+			return fmt.Sprintf("Fetch: %s", s)
+		}
+	case "NotebookEdit":
+		if np, ok := m["notebook_path"]; ok {
+			var s string
+			json.Unmarshal(np, &s)
+			return fmt.Sprintf("Edit notebook: %s", s)
+		}
+	case "Worktree", "EnterWorktree":
+		if br, ok := m["branch"]; ok {
+			var s string
+			json.Unmarshal(br, &s)
+			return fmt.Sprintf("Create worktree: %s", s)
 		}
 	}
 	return ""

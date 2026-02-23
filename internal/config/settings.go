@@ -24,10 +24,32 @@ type Settings struct {
 }
 
 // PermissionRule defines a tool permission rule.
+// Compatible with both the Go format ({tool, pattern, action}) and the JS format.
 type PermissionRule struct {
 	Tool    string `json:"tool"`
 	Pattern string `json:"pattern,omitempty"`
 	Action  string `json:"action"` // "allow", "deny", "ask"
+}
+
+// jsPermissions represents the JS-format permissions block:
+//
+//	{ "allow": ["Bash(npm:*)", "Read"], "deny": ["Bash(rm *)"], "ask": ["Write"] }
+type jsPermissions struct {
+	Allow                []string `json:"allow,omitempty"`
+	Deny                 []string `json:"deny,omitempty"`
+	Ask                  []string `json:"ask,omitempty"`
+	DefaultMode          string   `json:"defaultMode,omitempty"`
+	AdditionalDirectories []string `json:"additionalDirectories,omitempty"`
+}
+
+// rawSettings is used for initial JSON deserialization before normalizing
+// the permissions format.
+type rawSettings struct {
+	Permissions json.RawMessage   `json:"permissions,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	Hooks       json.RawMessage   `json:"hooks,omitempty"`
+	Sandbox     json.RawMessage   `json:"sandbox,omitempty"`
 }
 
 // LoadSettings loads and merges settings from all five levels.
@@ -70,17 +92,220 @@ func settingsPaths(home, cwd string) []string {
 }
 
 // loadSettingsFile reads and parses a single settings JSON file.
+// It supports both the Go format (flat rule array) and the JS format
+// (permissions: {allow:[], deny:[], ask:[]}).
 func loadSettingsFile(path string) (*Settings, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	var s Settings
-	if err := json.Unmarshal(data, &s); err != nil {
+	var raw rawSettings
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	return &s, nil
+
+	s := &Settings{
+		Model:   raw.Model,
+		Env:     raw.Env,
+		Hooks:   raw.Hooks,
+		Sandbox: raw.Sandbox,
+	}
+
+	// Parse permissions: try JS format first, then Go format.
+	if raw.Permissions != nil {
+		rules, err := parsePermissions(raw.Permissions)
+		if err != nil {
+			return nil, err
+		}
+		s.Permissions = rules
+	}
+
+	return s, nil
+}
+
+// parsePermissions handles both permission formats:
+//   - JS format: {"allow": ["Bash(npm:*)"], "deny": [...], "ask": [...]}
+//   - Go format: [{"tool": "Bash", "pattern": "npm:*", "action": "allow"}, ...]
+func parsePermissions(data json.RawMessage) ([]PermissionRule, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	// Determine the type by looking at the first non-whitespace byte.
+	trimmed := trimJSONWhitespace(data)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	switch trimmed[0] {
+	case '{':
+		// JS format: {allow: [...], deny: [...], ask: [...]}
+		return parseJSPermissions(data)
+	case '[':
+		// Go format: [{tool, pattern, action}, ...]
+		var rules []PermissionRule
+		if err := json.Unmarshal(data, &rules); err != nil {
+			return nil, err
+		}
+		return rules, nil
+	default:
+		return nil, nil
+	}
+}
+
+// parseJSPermissions parses the JS-format permissions block into our internal
+// PermissionRule slice. Rule strings like "Bash(npm:*)" are parsed into
+// {Tool: "Bash", Pattern: "npm:*", Action: "allow"}.
+func parseJSPermissions(data json.RawMessage) ([]PermissionRule, error) {
+	var jp jsPermissions
+	if err := json.Unmarshal(data, &jp); err != nil {
+		return nil, err
+	}
+
+	var rules []PermissionRule
+
+	for _, s := range jp.Allow {
+		rule := ParseRuleString(s)
+		rule.Action = "allow"
+		rules = append(rules, rule)
+	}
+	for _, s := range jp.Deny {
+		rule := ParseRuleString(s)
+		rule.Action = "deny"
+		rules = append(rules, rule)
+	}
+	for _, s := range jp.Ask {
+		rule := ParseRuleString(s)
+		rule.Action = "ask"
+		rules = append(rules, rule)
+	}
+
+	return rules, nil
+}
+
+// ParseRuleString parses a rule string like "Bash(npm:*)" or "Read" into a
+// PermissionRule. This matches the JS TW() function behavior.
+//
+// Format: ToolName or ToolName(pattern)
+// Examples:
+//
+//	"Bash"           → {Tool: "Bash"}
+//	"Bash(npm:*)"    → {Tool: "Bash", Pattern: "npm:*"}
+//	"Read(src/**)"   → {Tool: "Read", Pattern: "src/**"}
+//	"WebFetch(domain:example.com)" → {Tool: "WebFetch", Pattern: "domain:example.com"}
+func ParseRuleString(s string) PermissionRule {
+	// Find the first unescaped '('.
+	parenIdx := findUnescaped(s, '(')
+	if parenIdx == -1 {
+		return PermissionRule{Tool: s}
+	}
+
+	// Find the last unescaped ')'.
+	closeIdx := findLastUnescaped(s, ')')
+	if closeIdx == -1 || closeIdx <= parenIdx || closeIdx != len(s)-1 {
+		return PermissionRule{Tool: s}
+	}
+
+	toolName := s[:parenIdx]
+	if toolName == "" {
+		return PermissionRule{Tool: s}
+	}
+
+	content := s[parenIdx+1 : closeIdx]
+	// Empty parens or just "*" means match all — same as no pattern.
+	if content == "" || content == "*" {
+		return PermissionRule{Tool: toolName}
+	}
+
+	// Unescape the content.
+	content = unescapeRuleContent(content)
+
+	return PermissionRule{Tool: toolName, Pattern: content}
+}
+
+// FormatRuleString converts a PermissionRule back to the JS string format.
+// This is the inverse of ParseRuleString.
+func FormatRuleString(r PermissionRule) string {
+	if r.Pattern == "" {
+		return r.Tool
+	}
+	return r.Tool + "(" + escapeRuleContent(r.Pattern) + ")"
+}
+
+// findUnescaped finds the first unescaped occurrence of ch in s.
+func findUnescaped(s string, ch byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ch {
+			backslashes := 0
+			j := i - 1
+			for j >= 0 && s[j] == '\\' {
+				backslashes++
+				j--
+			}
+			if backslashes%2 == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// findLastUnescaped finds the last unescaped occurrence of ch in s.
+func findLastUnescaped(s string, ch byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == ch {
+			backslashes := 0
+			j := i - 1
+			for j >= 0 && s[j] == '\\' {
+				backslashes++
+				j--
+			}
+			if backslashes%2 == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// unescapeRuleContent removes escape sequences from rule content.
+func unescapeRuleContent(s string) string {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			next := s[i+1]
+			if next == '(' || next == ')' || next == '\\' {
+				result = append(result, next)
+				i++
+				continue
+			}
+		}
+		result = append(result, s[i])
+	}
+	return string(result)
+}
+
+// escapeRuleContent escapes special characters in rule content for serialization.
+func escapeRuleContent(s string) string {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '(' || s[i] == ')' || s[i] == '\\' {
+			result = append(result, '\\')
+		}
+		result = append(result, s[i])
+	}
+	return string(result)
+}
+
+// trimJSONWhitespace removes leading whitespace from JSON data.
+func trimJSONWhitespace(data []byte) []byte {
+	for i, b := range data {
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			return data[i:]
+		}
+	}
+	return nil
 }
 
 // mergeSettings merges overlay on top of base.

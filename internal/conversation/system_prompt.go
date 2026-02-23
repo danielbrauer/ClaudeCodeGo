@@ -54,7 +54,8 @@ func BuildSystemPrompt(cwd string, settings *config.Settings, skillContent strin
 }
 
 // formatPermissionRules creates a human-readable summary of permission rules
-// for inclusion in the system prompt.
+// for inclusion in the system prompt. Uses the JS string format for
+// compatibility (e.g., "Bash(npm:*): allow").
 func formatPermissionRules(rules []config.PermissionRule) string {
 	if len(rules) == 0 {
 		return ""
@@ -63,10 +64,7 @@ func formatPermissionRules(rules []config.PermissionRule) string {
 	var lines []string
 	lines = append(lines, "The following permission rules are configured:")
 	for _, rule := range rules {
-		desc := rule.Tool
-		if rule.Pattern != "" {
-			desc += "(" + rule.Pattern + ")"
-		}
+		desc := config.FormatRuleString(rule)
 		desc += ": " + rule.Action
 		lines = append(lines, "- "+desc)
 	}

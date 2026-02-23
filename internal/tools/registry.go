@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/anthropics/claude-code-go/internal/api"
+	"github.com/anthropics/claude-code-go/internal/config"
 )
 
 // Tool is the interface that all built-in tools implement.
@@ -33,6 +34,21 @@ type PermissionHandler interface {
 	// RequestPermission asks the user whether to allow a tool call.
 	// It returns true if the user approves.
 	RequestPermission(ctx context.Context, toolName string, input json.RawMessage) (bool, error)
+}
+
+// RichPermissionHandler is an extended permission handler that returns
+// detailed permission results including decision reasons and suggestions.
+// If the handler implements this interface, the registry will use it for
+// richer permission checking.
+type RichPermissionHandler interface {
+	PermissionHandler
+	// CheckPermission evaluates permission rules and returns a rich result.
+	CheckPermission(toolName string, input json.RawMessage) config.PermissionResult
+}
+
+// PermissionContextProvider gives access to the session-level permission context.
+type PermissionContextProvider interface {
+	GetPermissionContext() *config.ToolPermissionContext
 }
 
 // Registry holds registered tools and dispatches execution.
@@ -76,6 +92,7 @@ func (r *Registry) HasTool(name string) bool {
 func (r *Registry) Execute(ctx context.Context, name string, input []byte) (string, error) {
 	r.mu.RLock()
 	tool, ok := r.tools[name]
+	perm := r.permission
 	r.mu.RUnlock()
 
 	if !ok {
@@ -85,13 +102,38 @@ func (r *Registry) Execute(ctx context.Context, name string, input []byte) (stri
 	rawInput := json.RawMessage(input)
 
 	// Check permission if needed.
-	if tool.RequiresPermission(rawInput) && r.permission != nil {
-		allowed, err := r.permission.RequestPermission(ctx, name, rawInput)
-		if err != nil {
-			return "", fmt.Errorf("permission check: %w", err)
-		}
-		if !allowed {
-			return "Permission denied by user.", fmt.Errorf("permission denied")
+	if tool.RequiresPermission(rawInput) && perm != nil {
+		// Try rich permission check first.
+		if rph, ok := perm.(RichPermissionHandler); ok {
+			result := rph.CheckPermission(name, rawInput)
+			switch result.Behavior {
+			case config.BehaviorAllow:
+				// Permission granted by rules — proceed.
+			case config.BehaviorDeny:
+				msg := "Permission denied."
+				if result.Message != "" {
+					msg = result.Message
+				}
+				return msg, fmt.Errorf("permission denied")
+			default:
+				// BehaviorAsk or BehaviorPassthrough — fall back to interactive prompt.
+				allowed, err := perm.RequestPermission(ctx, name, rawInput)
+				if err != nil {
+					return "", fmt.Errorf("permission check: %w", err)
+				}
+				if !allowed {
+					return "Permission denied by user.", fmt.Errorf("permission denied")
+				}
+			}
+		} else {
+			// Simple permission handler.
+			allowed, err := perm.RequestPermission(ctx, name, rawInput)
+			if err != nil {
+				return "", fmt.Errorf("permission check: %w", err)
+			}
+			if !allowed {
+				return "Permission denied by user.", fmt.Errorf("permission denied")
+			}
 		}
 	}
 
@@ -100,6 +142,33 @@ func (r *Registry) Execute(ctx context.Context, name string, input []byte) (stri
 		return result, err
 	}
 	return result, nil
+}
+
+// LastPermissionResult returns the most recent rich permission result for
+// a tool execution, if the handler supports it. Returns nil otherwise.
+func (r *Registry) LastPermissionResult(name string, input json.RawMessage) *config.PermissionResult {
+	r.mu.RLock()
+	perm := r.permission
+	r.mu.RUnlock()
+
+	if rph, ok := perm.(RichPermissionHandler); ok {
+		result := rph.CheckPermission(name, input)
+		return &result
+	}
+	return nil
+}
+
+// GetPermissionContext returns the session-level permission context, if
+// the handler supports it.
+func (r *Registry) GetPermissionContext() *config.ToolPermissionContext {
+	r.mu.RLock()
+	perm := r.permission
+	r.mu.RUnlock()
+
+	if pcp, ok := perm.(PermissionContextProvider); ok {
+		return pcp.GetPermissionContext()
+	}
+	return nil
 }
 
 // SetPermissionHandler replaces the permission handler at runtime.

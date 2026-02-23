@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/anthropics/claude-code-go/internal/api"
+	"github.com/anthropics/claude-code-go/internal/config"
 )
 
 // MessageStartMsg carries token usage from the start of an API response.
@@ -60,10 +61,11 @@ type LoopDoneMsg struct {
 // PermissionRequestMsg is sent when a tool needs user approval.
 // The tool's goroutine blocks on ResultCh until the TUI sends a response.
 type PermissionRequestMsg struct {
-	ToolName string
-	Input    json.RawMessage
-	Summary  string
-	ResultCh chan bool
+	ToolName    string
+	Input       json.RawMessage
+	Summary     string
+	Suggestions []config.PermissionSuggestion
+	ResultCh    chan PermissionResponse
 }
 
 // SubmitInputMsg is sent when the user presses Enter to submit input.
