@@ -75,7 +75,7 @@ func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 		apiVersion:  DefaultAPIVersion,
 		httpClient:  http.DefaultClient,
 		tokenSource: tokenSource,
-		model:       ModelClaude4Sonnet,
+		model:       ModelClaude46Sonnet,
 		maxTokens:   DefaultMaxTokens,
 		userAgent:   "claude-code/dev",
 	}
@@ -88,6 +88,11 @@ func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 // Model returns the current model.
 func (c *Client) Model() string {
 	return c.model
+}
+
+// SetModel changes the model used for subsequent API calls.
+func (c *Client) SetModel(model string) {
+	c.model = model
 }
 
 // CreateMessageStream sends a streaming Messages API request and dispatches

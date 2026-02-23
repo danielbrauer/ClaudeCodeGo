@@ -89,6 +89,11 @@ func (l *Loop) SetHandler(h api.StreamHandler) {
 	l.handler = h
 }
 
+// SetModel changes the model used for subsequent API calls.
+func (l *Loop) SetModel(model string) {
+	l.client.SetModel(model)
+}
+
 // SetPermissionHandler replaces the permission handler on the tool executor.
 // This is a no-op if the executor doesn't support it.
 func (l *Loop) SetPermissionHandler(h interface{}) {
@@ -124,6 +129,17 @@ func (l *Loop) Compact(ctx context.Context) error {
 		return fmt.Errorf("compaction not configured")
 	}
 	return l.compactor.Compact(ctx, l.history)
+}
+
+// Clear resets the conversation history to empty, starting a fresh conversation.
+func (l *Loop) Clear() {
+	l.history.SetMessages(nil)
+}
+
+// SetOnTurnComplete replaces the turn-complete callback. This is used by
+// /clear to point the callback at the new session after clearing.
+func (l *Loop) SetOnTurnComplete(fn func(history *History)) {
+	l.onTurnComplete = fn
 }
 
 func (l *Loop) run(ctx context.Context) error {

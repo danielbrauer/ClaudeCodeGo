@@ -30,6 +30,22 @@ var (
 )
 
 func main() {
+	// Check for subcommands before flag parsing.
+	// The JS CLI uses Commander.js subcommands: `claude login`, `claude logout`, `claude status`.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "login":
+			runLogin(os.Args[2:])
+			return
+		case "logout":
+			runLogout()
+			return
+		}
+	}
+	if handleSubcommand() {
+		return
+	}
+
 	// CLI flags.
 	modelFlag := flag.String("model", "", "Model to use (opus, sonnet, haiku, or full model ID)")
 	printMode := flag.Bool("p", false, "Print mode: non-interactive, exit after response")
@@ -65,9 +81,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Handle --login.
+	// Handle --login (legacy flag, same as `claude login` subcommand).
 	if *loginFlag {
-		if err := doLogin(ctx, store); err != nil {
+		if err := doLogin(ctx, store, auth.LoginOptions{}); err != nil {
 			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -78,7 +94,7 @@ func main() {
 	tokenProvider := auth.NewTokenProvider(store)
 	if _, err := tokenProvider.GetAccessToken(ctx); err != nil {
 		fmt.Println("Not authenticated. Starting login flow...")
-		if err := doLogin(ctx, store); err != nil {
+		if err := doLogin(ctx, store, auth.LoginOptions{}); err != nil {
 			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -114,20 +130,12 @@ func main() {
 	skillContent := skills.ActiveSkillContent(loadedSkills)
 
 	// Resolve model: CLI flag > settings > default.
-	model := api.ModelClaude4Sonnet
+	model := api.ModelClaude46Sonnet
 	if settings.Model != "" {
-		if resolved, ok := api.ModelAliases[settings.Model]; ok {
-			model = resolved
-		} else {
-			model = settings.Model
-		}
+		model = api.ResolveModelAlias(settings.Model)
 	}
 	if *modelFlag != "" {
-		if resolved, ok := api.ModelAliases[*modelFlag]; ok {
-			model = resolved
-		} else {
-			model = *modelFlag
-		}
+		model = api.ResolveModelAlias(*modelFlag)
 	}
 
 	// Create API client.
@@ -339,6 +347,12 @@ func main() {
 		MCPManager: mcpManager,
 		Skills:     loadedSkills,  // Phase 7
 		Hooks:      hookRunner,    // Phase 7
+		OnModelSwitch: func(newModel string) {
+			if currentSession != nil {
+				currentSession.Model = newModel
+			}
+		},
+		LogoutFunc: func() error { return store.Delete() },
 	})
 
 	if initialPrompt != "" {
@@ -349,14 +363,137 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Handle /login: the TUI exited requesting a re-authentication flow.
+	if app.ExitAction() == tui.ExitLogin {
+		loginCtx, loginCancel := context.WithCancel(context.Background())
+		defer loginCancel()
+		if err := doLogin(loginCtx, store, auth.LoginOptions{}); err != nil {
+			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
 }
 
-func doLogin(ctx context.Context, store *auth.CredentialStore) error {
+// handleSubcommand checks for subcommands ("status", "auth status") before
+// flag parsing. Returns true if a subcommand was handled.
+func handleSubcommand() bool {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		return false
+	}
+
+	// Match "claude status [flags]" or "claude auth status [flags]".
+	var subcmdArgs []string
+	switch {
+	case args[0] == "status":
+		subcmdArgs = args[1:]
+	case args[0] == "auth" && len(args) > 1 && args[1] == "status":
+		subcmdArgs = args[2:]
+	default:
+		return false
+	}
+
+	runStatus(subcmdArgs)
+	return true
+}
+
+// runStatus executes the status subcommand. Output is JSON by default (matching
+// the JS version); use --text for human-readable output.
+func runStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	jsonFlag := fs.Bool("json", false, "Output as JSON (default)")
+	textFlag := fs.Bool("text", false, "Output as human-readable text")
+	fs.Parse(args)
+
+	store, err := auth.NewCredentialStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	status := auth.GetAuthStatus(store)
+
+	if *textFlag {
+		fmt.Println(auth.FormatStatusText(status))
+	} else {
+		// JSON is the default (--json flag is accepted but optional).
+		_ = jsonFlag
+		output, err := auth.FormatStatusJSON(status)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(output)
+	}
+
+	if !status.LoggedIn {
+		os.Exit(1)
+	}
+}
+
+// runLogin handles the `claude login` subcommand.
+// Matches the JS: claude login [--email <email>] [--sso]
+func runLogin(args []string) {
+	loginFS := flag.NewFlagSet("login", flag.ExitOnError)
+	loginFS.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: claude login [--email <email>] [--sso]\n\nSign in to your Anthropic account.\n\nOptions:\n")
+		loginFS.PrintDefaults()
+	}
+	email := loginFS.String("email", "", "Pre-populate email address on the login page")
+	sso := loginFS.Bool("sso", false, "Force SSO login flow")
+	loginFS.Parse(args)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	store, err := auth.NewCredentialStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	opts := auth.LoginOptions{
+		Email: *email,
+		SSO:   *sso,
+	}
+	if err := doLogin(ctx, store, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// runLogout handles the `claude logout` subcommand.
+// Matches the JS: claude logout
+func runLogout() {
+	store, err := auth.NewCredentialStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := doLogout(store); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to log out.\n")
+		os.Exit(1)
+	}
+	fmt.Println("Successfully logged out from your Anthropic account.")
+	os.Exit(0)
+}
+
+func doLogin(ctx context.Context, store *auth.CredentialStore, opts auth.LoginOptions) error {
 	flow, err := auth.NewOAuthFlow()
 	if err != nil {
 		return fmt.Errorf("initializing OAuth flow: %w", err)
 	}
-	result, err := flow.Login(ctx)
+	result, err := flow.Login(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -365,20 +502,24 @@ func doLogin(ctx context.Context, store *auth.CredentialStore) error {
 		return fmt.Errorf("saving tokens: %w", err)
 	}
 
-	// Issue 9: Store account metadata.
+	// Store account metadata.
 	if result.Account != nil {
 		if err := store.SaveAccount(result.Account); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save account info: %v\n", err)
 		}
 	}
 
-	// Issue 8: Store API key.
+	// Store API key.
 	if result.APIKey != "" {
 		if err := store.SaveAPIKey(result.APIKey); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save API key: %v\n", err)
 		}
 	}
 
-	fmt.Println("Login successful!")
+	fmt.Println("Login successful.")
 	return nil
+}
+
+func doLogout(store *auth.CredentialStore) error {
+	return store.Delete()
 }

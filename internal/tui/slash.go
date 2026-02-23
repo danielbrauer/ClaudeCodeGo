@@ -37,10 +37,8 @@ func newSlashRegistry() *slashRegistry {
 
 	r.register(SlashCommand{
 		Name:        "model",
-		Description: "Show current model",
-		Execute: func(m *model) string {
-			return fmt.Sprintf("Current model: %s", m.modelName)
-		},
+		Description: "Show or switch model",
+		Execute:     nil, // handled specially in handleSubmit (needs interactive picker)
 	})
 
 	r.register(SlashCommand{
@@ -85,6 +83,48 @@ func newSlashRegistry() *slashRegistry {
 			}
 			return strings.TrimRight(b.String(), "\n")
 		},
+	})
+
+	r.register(SlashCommand{
+		Name:        "clear",
+		Description: "Clear conversation history and free up context",
+		Execute:     nil, // handled specially in handleSubmit (resets session state)
+	})
+
+	r.register(SlashCommand{
+		Name:        "reset",
+		Description: "Clear conversation history and free up context",
+		Execute:     nil, // alias for clear
+	})
+
+	r.register(SlashCommand{
+		Name:        "new",
+		Description: "Clear conversation history and free up context",
+		Execute:     nil, // alias for clear
+	})
+
+	r.register(SlashCommand{
+		Name:        "memory",
+		Description: "Edit Claude memory files",
+		Execute:     nil, // handled specially in handleSubmit (needs tea.Exec)
+	})
+
+	r.register(SlashCommand{
+		Name:        "init",
+		Description: "Initialize a new CLAUDE.md file with codebase documentation",
+		Execute:     nil, // handled specially in handleSubmit (sends prompt to loop)
+	})
+
+	r.register(SlashCommand{
+		Name:        "login",
+		Description: "Sign in to your Anthropic account",
+		Execute:     nil, // handled specially in handleSubmit (triggers quit + re-auth)
+	})
+
+	r.register(SlashCommand{
+		Name:        "logout",
+		Description: "Log out from your Anthropic account",
+		Execute:     nil, // handled specially in handleSubmit (clears credentials + quits)
 	})
 
 	r.register(SlashCommand{
@@ -175,8 +215,8 @@ func (r *slashRegistry) helpText() string {
 	var b strings.Builder
 	b.WriteString("Available commands:\n")
 	for _, name := range r.names {
-		if name == "exit" {
-			continue // don't show exit since quit is listed
+		if name == "exit" || name == "reset" || name == "new" {
+			continue // don't show aliases
 		}
 		cmd := r.commands[name]
 		b.WriteString(fmt.Sprintf("  /%-12s %s\n", name, cmd.Description))

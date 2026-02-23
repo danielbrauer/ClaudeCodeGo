@@ -170,13 +170,23 @@ func NewOAuthFlow() (*OAuthFlow, error) {
 	return &OAuthFlow{config: cfg}, nil
 }
 
+// LoginOptions holds optional parameters for the OAuth login flow.
+type LoginOptions struct {
+	Email string // Pre-populate email address on the login page (login_hint).
+	SSO   bool   // Force SSO login flow (login_method=sso).
+}
+
 // Login performs the full OAuth PKCE flow:
 // 1. Start a local HTTP server for the callback
 // 2. Open the browser to the authorization URL
 // 3. Wait for the callback with the authorization code (or manual entry)
 // 4. Exchange the code for tokens
 // 5. Fetch profile info, roles, and create API key
-func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
+func (f *OAuthFlow) Login(ctx context.Context, opts ...LoginOptions) (*LoginResult, error) {
+	var opt LoginOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	verifier, err := generateCodeVerifier()
 	if err != nil {
 		return nil, err
@@ -230,10 +240,10 @@ func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 	defer server.Shutdown(context.Background())
 
 	// Issue 4: Build both automatic and manual authorization URLs.
-	autoAuthURL := buildAuthURL(f.config, challenge, state, port, false)
-	manualAuthURL := buildAuthURL(f.config, challenge, state, port, true)
+	autoAuthURL := buildAuthURL(f.config, challenge, state, port, false, opt)
+	manualAuthURL := buildAuthURL(f.config, challenge, state, port, true, opt)
 
-	fmt.Println("Opening browser for authentication...")
+	fmt.Println("Opening browser to sign in...")
 	if err := openBrowser(autoAuthURL); err != nil {
 		fmt.Printf("Could not open browser automatically: %v\n", err)
 	}
@@ -348,7 +358,7 @@ func (f *OAuthFlow) Login(ctx context.Context) (*LoginResult, error) {
 }
 
 // Issue 4: buildAuthURL accepts isManual to switch between localhost and platform redirect.
-func buildAuthURL(cfg *OAuthURLConfig, challenge, state string, port int, isManual bool) string {
+func buildAuthURL(cfg *OAuthURLConfig, challenge, state string, port int, isManual bool, opts LoginOptions) string {
 	u, _ := url.Parse(cfg.AuthorizeURL)
 	q := u.Query()
 	q.Set("code", "true")
@@ -363,6 +373,12 @@ func buildAuthURL(cfg *OAuthURLConfig, challenge, state string, port int, isManu
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	q.Set("state", state)
+	if opts.Email != "" {
+		q.Set("login_hint", opts.Email)
+	}
+	if opts.SSO {
+		q.Set("login_method", "sso")
+	}
 	u.RawQuery = q.Encode()
 	return u.String()
 }

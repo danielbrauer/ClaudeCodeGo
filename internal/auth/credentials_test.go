@@ -311,6 +311,59 @@ func TestCredentialsFile_AllFieldsRoundTrip(t *testing.T) {
 }
 
 // ===========================================================================
+// CredentialStore.Delete (logout)
+// ===========================================================================
+
+func TestCredentialStore_Delete(t *testing.T) {
+	dir := t.TempDir()
+	store := &CredentialStore{
+		dir:  dir,
+		path: filepath.Join(dir, ".credentials.json"),
+	}
+
+	// Save tokens and account.
+	store.Save(&OAuthTokens{AccessToken: "tok"})
+	store.SaveAccount(&OAuthAccount{AccountUUID: "acct"})
+
+	// Verify file exists.
+	if _, err := os.Stat(store.path); os.IsNotExist(err) {
+		t.Fatal("credentials file should exist before delete")
+	}
+
+	// Delete.
+	if err := store.Delete(); err != nil {
+		t.Fatalf("Delete error: %v", err)
+	}
+
+	// File should be gone.
+	if _, err := os.Stat(store.path); !os.IsNotExist(err) {
+		t.Error("credentials file should not exist after delete")
+	}
+
+	// Load should return nil (no error, no tokens).
+	tokens, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load after delete error: %v", err)
+	}
+	if tokens != nil {
+		t.Error("Load after delete should return nil tokens")
+	}
+}
+
+func TestCredentialStore_DeleteNonExistent(t *testing.T) {
+	dir := t.TempDir()
+	store := &CredentialStore{
+		dir:  dir,
+		path: filepath.Join(dir, ".credentials.json"),
+	}
+
+	// Deleting when no file exists should not error.
+	if err := store.Delete(); err != nil {
+		t.Fatalf("Delete on nonexistent file should not error: %v", err)
+	}
+}
+
+// ===========================================================================
 // Issue 10: File locking during refresh
 // ===========================================================================
 
