@@ -68,7 +68,6 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 
 	// Regular message: send to the agentic loop.
 	m.mode = modeStreaming
-	m.textInput.Blur()
 
 	loopCmd := func() tea.Msg {
 		err := m.loop.SendMessage(m.ctx, text)

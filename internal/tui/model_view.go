@@ -97,19 +97,8 @@ func (m model) View() string {
 	}
 
 	// 8. Input area with borders.
-	if m.mode == modeInput || (m.mode == modeStreaming && m.textInput.Value() != "") {
+	if m.mode == modeInput || m.mode == modeStreaming {
 		b.WriteString(m.renderInputArea())
-	}
-
-	// 8b. Streaming hints: queue count and interrupt hint.
-	if m.mode == modeStreaming {
-		if m.textInput.Value() == "" && m.queue.Len() > 0 {
-			b.WriteString(queuedBadgeStyle.Render(fmt.Sprintf("  %d message%s queued",
-				m.queue.Len(), pluralS(m.queue.Len()))))
-			b.WriteString("\n")
-		}
-		b.WriteString("  " + shortcutsHintStyle.Render("esc to interrupt"))
-		b.WriteString("\n")
 	}
 
 	// 9. Status line (custom command output) or default status bar.
@@ -149,9 +138,9 @@ func (m model) renderInputArea() string {
 		} else {
 			m.textInput.Placeholder = ""
 		}
-	} else {
+	} else if m.mode == modeStreaming {
 		// Streaming mode — show a hint that input will be queued.
-		m.textInput.Placeholder = ""
+		m.textInput.Placeholder = "Type a message to queue..."
 	}
 
 	b.WriteString(m.textInput.View())
@@ -172,9 +161,9 @@ func (m model) renderInputArea() string {
 			b.WriteString("\n")
 		}
 	} else if m.mode == modeStreaming {
-		hint := "Enter to queue message"
+		hint := "esc to interrupt · enter to queue"
 		if m.queue.Len() > 0 {
-			hint += fmt.Sprintf(" · %d queued", m.queue.Len())
+			hint += fmt.Sprintf(" · %d message%s queued", m.queue.Len(), pluralS(m.queue.Len()))
 		}
 		b.WriteString("  " + shortcutsHintStyle.Render(hint))
 		b.WriteString("\n")
