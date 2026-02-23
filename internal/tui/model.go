@@ -127,6 +127,10 @@ type model struct {
 	// Status line (custom command-based status bar).
 	statusLineText string // last output from the status line command
 
+	// Ctrl-C double-press state: true after the first press, reset after
+	// ctrlCTimeout (800 ms). A second press within the window exits.
+	ctrlCPending bool
+
 	// Whether we should quit.
 	quitting bool
 

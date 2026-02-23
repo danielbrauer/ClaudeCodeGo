@@ -45,8 +45,15 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		m.quitting = true
-		return m, tea.Quit
+		// Double-press detection: first Ctrl-C clears input and shows a
+		// hint; second press within 800 ms actually exits.
+		if m.ctrlCPending {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		m.textInput.Reset()
+		m.ctrlCPending = true
+		return m, startCtrlCTimer()
 
 	case tea.KeyTab:
 		// If the input is empty and we have a dynamic suggestion,
