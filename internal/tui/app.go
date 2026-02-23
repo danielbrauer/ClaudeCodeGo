@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
+	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/conversation"
 	"github.com/anthropics/claude-code-go/internal/session"
 	"github.com/anthropics/claude-code-go/internal/skills"
@@ -35,11 +36,12 @@ type AppConfig struct {
 	Version       string
 	Model         string
 	PrintMode     bool
-	MCPManager    MCPStatus              // *mcp.Manager; nil if no MCP servers configured
-	Skills        []skills.Skill         // Phase 7: loaded skills for slash command registration
-	Hooks         conversation.HookRunner // Phase 7: hook runner for SessionStart, etc.
-	OnModelSwitch func(newModel string)   // called when user switches model via /model
-	LogoutFunc    func() error            // Called when the user types /logout to clear credentials.
+	MCPManager    MCPStatus                          // *mcp.Manager; nil if no MCP servers configured
+	Skills        []skills.Skill                     // Phase 7: loaded skills for slash command registration
+	Hooks         conversation.HookRunner            // Phase 7: hook runner for SessionStart, etc.
+	RuleHandler   *config.RuleBasedPermissionHandler // Rule-based permission handler from main; may be nil
+	OnModelSwitch func(newModel string)              // called when user switches model via /model
+	LogoutFunc    func() error                       // Called when the user types /logout to clear credentials.
 }
 
 // App is the top-level TUI application. main.go creates it and calls Run.
@@ -108,8 +110,9 @@ func (a *App) Run(ctx context.Context) error {
 	a.cfg.Loop.SetHandler(handler)
 
 	// Wire the TUI permission handler into the loop's registry.
-	// The registry's permission handler is set from main.go; we replace it here.
-	permHandler := NewTUIPermissionHandler(p)
+	// The TUI handler wraps the rule-based handler from main.go so that
+	// rules are checked first, and only unmatched calls prompt the user.
+	permHandler := NewTUIPermissionHandler(p, a.cfg.RuleHandler)
 	a.cfg.Loop.SetPermissionHandler(permHandler)
 
 	// Print the banner to scrollback before starting.
