@@ -41,8 +41,8 @@ type AuthStatus struct {
 	SubscriptionType *string     `json:"subscriptionType"`
 }
 
-// subscriptionDisplayName returns a human-readable label for subscription types.
-func subscriptionDisplayName(subType string) string {
+// SubscriptionDisplayName returns a human-readable label for subscription types.
+func SubscriptionDisplayName(subType string) string {
 	switch strings.ToLower(subType) {
 	case "enterprise":
 		return "Claude Enterprise"
@@ -96,7 +96,7 @@ func GetAuthStatus(store *CredentialStore) *AuthStatus {
 
 			// Populate subscription type from stored token metadata.
 			if tokens.SubscriptionType != "" {
-				subDisplay := subscriptionDisplayName(tokens.SubscriptionType)
+				subDisplay := SubscriptionDisplayName(tokens.SubscriptionType)
 				status.SubscriptionType = &subDisplay
 			}
 

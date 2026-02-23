@@ -36,6 +36,8 @@ type AppConfig struct {
 	SessStore     *session.Store
 	Version       string
 	Model         string
+	Cwd           string                             // working directory, shown in startup banner
+	BillingType   string                             // subscription display name (e.g. "Claude Pro"); may be empty
 	PrintMode     bool
 	MCPManager    MCPStatus                          // *mcp.Manager; nil if no MCP servers configured
 	Skills        []skills.Skill                     // Phase 7: loaded skills for slash command registration
@@ -122,9 +124,34 @@ func (a *App) Run(ctx context.Context) error {
 	permHandler := NewTUIPermissionHandler(p, a.cfg.RuleHandler)
 	a.cfg.Loop.SetPermissionHandler(permHandler)
 
-	// Print the banner to scrollback before starting.
-	fmt.Printf("\nclaude %s (Go) | model: %s\n", a.cfg.Version, a.cfg.Model)
-	fmt.Println("Type your message. Press Ctrl+C to exit.")
+	// Print the banner to scrollback before starting (matches JS CLI layout).
+	modelDisplay := api.ModelDisplayName(a.cfg.Model)
+	cwdDisplay := shortenPath(a.cfg.Cwd)
+
+	// Build the right-hand info lines next to the mascot.
+	line1 := fmt.Sprintf("\033[1mClaude Code\033[0m v%s", a.cfg.Version)
+	var line2 string
+	if a.cfg.BillingType != "" {
+		line2 = fmt.Sprintf("%s · %s", modelDisplay, a.cfg.BillingType)
+	} else {
+		line2 = modelDisplay
+	}
+	line3 := cwdDisplay
+
+	// Orange mascot with info beside it. The body uses background coloring
+	// to form a solid shape (matches the JS CLI's "clawd" mascot).
+	// Color: rgb(215,119,87) — the official "clawd_body" color.
+	oFg := "\033[38;2;215;119;87m"  // orange foreground
+	oBg := "\033[48;2;215;119;87m"  // orange background
+	bFg := "\033[38;2;0;0;0m"       // black foreground (eyes)
+	rst := "\033[0m"
+	fmt.Println()
+	// Line 1: outer ▗/▖ orange fg; inner " ▗   ▖ " black-on-orange (eyes).
+	fmt.Printf("%s▗%s%s ▗   ▖ %s%s▖%s  %s\n", oFg, bFg, oBg, rst, oFg, rst, line1)
+	// Line 2: solid orange body (7 spaces with orange background).
+	fmt.Printf(" %s       %s   %s\n", oBg, rst, line2)
+	// Line 3: feet in orange foreground only.
+	fmt.Printf("%s  ▘▘ ▝▝%s    %s\n", oFg, rst, line3)
 	fmt.Println()
 
 	// Run the BT event loop (blocks until quit).

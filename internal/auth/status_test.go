@@ -346,9 +346,9 @@ func TestSubscriptionDisplayName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := subscriptionDisplayName(tt.input)
+			got := SubscriptionDisplayName(tt.input)
 			if got != tt.expected {
-				t.Errorf("subscriptionDisplayName(%q) = %q, want %q", tt.input, got, tt.expected)
+				t.Errorf("SubscriptionDisplayName(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
 	}
