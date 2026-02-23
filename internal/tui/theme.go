@@ -109,4 +109,13 @@ var (
 
 	diffHunkHeaderStyle = lipgloss.NewStyle().
 				Foreground(colorCyan)
+
+	// Input border — the horizontal lines above and below the input area.
+	// Matches the JS "promptBorder" color (dim gray).
+	inputBorderStyle = lipgloss.NewStyle().
+				Foreground(colorDim)
+
+	// Shortcuts hint shown below the input area.
+	shortcutsHintStyle = lipgloss.NewStyle().
+				Foreground(colorDim)
 )
