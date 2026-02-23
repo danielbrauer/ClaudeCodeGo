@@ -79,3 +79,30 @@ func formatPermissionRules(rules []config.PermissionRule) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// PlanModeSystemPrompt returns the system prompt block injected when plan mode
+// is active. This constrains Claude to only read and plan, not make changes.
+// Matches the JS CLI's plan mode system message.
+const PlanModeSystemPrompt = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+
+Instead, focus on:
+1. Understanding the codebase by reading files and searching code
+2. Asking clarifying questions to understand requirements
+3. Designing your approach and writing a plan
+4. Using the ExitPlanMode tool when your plan is ready for review
+
+You may use these read-only tools: Read, Glob, Grep, TodoWrite, AskUserQuestion, ExitPlanMode, TaskOutput, Config.
+All other tools (Bash, Write, Edit, NotebookEdit, WebFetch, WebSearch, Agent, etc.) are blocked.`
+
+// WithPlanModePrompt appends the plan mode system block to the given system
+// blocks when plan mode is active. Returns the original blocks unmodified if
+// plan mode is not active.
+func WithPlanModePrompt(blocks []api.SystemBlock, mode config.PermissionMode) []api.SystemBlock {
+	if mode != config.ModePlan {
+		return blocks
+	}
+	return append(blocks, api.SystemBlock{
+		Type: "text",
+		Text: PlanModeSystemPrompt,
+	})
+}

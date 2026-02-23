@@ -52,6 +52,7 @@ func newSlashRegistry() *slashRegistry {
 	registerContextCommand(r)
 	registerMCPCommand(r)
 	registerFastCommand(r)
+	registerPermissionsCommand(r)
 	registerHelpCommand(r)
 	registerConfigCommand(r)
 	registerModelCommand(r)

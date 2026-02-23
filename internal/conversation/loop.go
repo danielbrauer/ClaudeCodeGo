@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/anthropics/claude-code-go/internal/api"
+	"github.com/anthropics/claude-code-go/internal/config"
 )
 
 // ToolExecutor executes tool calls and returns results.
@@ -116,6 +117,20 @@ func (l *Loop) SetPermissionHandler(h interface{}) {
 	}
 }
 
+// getPermissionMode returns the current permission mode from the tool executor's
+// permission context, or ModeDefault if not available.
+func (l *Loop) getPermissionMode() config.PermissionMode {
+	type permCtxGetter interface {
+		GetPermissionContext() *config.ToolPermissionContext
+	}
+	if pcg, ok := l.toolExec.(permCtxGetter); ok {
+		if ctx := pcg.GetPermissionContext(); ctx != nil {
+			return ctx.GetMode()
+		}
+	}
+	return config.ModeDefault
+}
+
 // SendMessage sends a user message and runs the agentic loop until the
 // assistant produces a final text response (stop_reason = "end_turn").
 func (l *Loop) SendMessage(ctx context.Context, userMessage string) error {
@@ -158,6 +173,11 @@ func (l *Loop) run(ctx context.Context) error {
 		msgs := l.history.Messages()
 		system := l.system
 		tools := l.tools
+
+		// Inject plan mode system prompt when plan mode is active.
+		// This is done dynamically per iteration so mode changes mid-session
+		// take effect immediately.
+		system = WithPlanModePrompt(system, l.getPermissionMode())
 
 		// Apply prompt caching if enabled for the current model.
 		// This adds cache_control breakpoints to system blocks, tool

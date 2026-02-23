@@ -104,6 +104,7 @@ func (a *App) Run(ctx context.Context) error {
 		SessStore:     a.cfg.SessStore,
 		Session:       a.cfg.Session,
 		Settings:      a.cfg.Settings,
+		RuleHandler:   a.cfg.RuleHandler,
 		OnModelSwitch: a.cfg.OnModelSwitch,
 		LogoutFunc:    a.cfg.LogoutFunc,
 		FastMode:      a.cfg.FastMode,

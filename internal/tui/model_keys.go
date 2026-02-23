@@ -66,7 +66,12 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTabComplete()
 
 	case tea.KeyShiftTab:
-		return m.handleTabCompletePrev()
+		// If we have active slash command completions, cycle backwards.
+		if len(m.completions) > 0 {
+			return m.handleTabCompletePrev()
+		}
+		// Otherwise, cycle permission mode (matches JS CLI: Shift+Tab cycles modes).
+		return m.handleCyclePermissionMode()
 
 	case tea.KeyEscape:
 		if len(m.completions) > 0 {

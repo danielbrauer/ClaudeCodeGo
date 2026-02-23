@@ -139,4 +139,17 @@ var (
 
 	queuedBadgeStyle = lipgloss.NewStyle().
 				Foreground(colorYellow)
+
+	// Permission mode indicator styles.
+	planModeStyle = lipgloss.NewStyle().
+			Foreground(colorYellow).
+			Bold(true)
+
+	autoAcceptStyle = lipgloss.NewStyle().
+			Foreground(colorGreen).
+			Bold(true)
+
+	bypassModeStyle = lipgloss.NewStyle().
+			Foreground(colorRed).
+			Bold(true)
 )

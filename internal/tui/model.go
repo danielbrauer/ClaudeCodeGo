@@ -108,6 +108,9 @@ type model struct {
 	// Fast mode toggle.
 	fastMode bool
 
+	// Permission mode: reference to the rule handler for mode cycling.
+	ruleHandler *config.RuleBasedPermissionHandler
+
 	// Command queueing: users can type and submit messages while the agent
 	// is busy. These are stored here and automatically sent when the current
 	// turn completes.
@@ -154,6 +157,7 @@ type ModelConfig struct {
 	SessStore     *session.Store
 	Session       *session.Session
 	Settings      *config.Settings
+	RuleHandler   *config.RuleBasedPermissionHandler
 	OnModelSwitch func(newModel string)
 	LogoutFunc    func() error
 	FastMode      bool
@@ -179,6 +183,7 @@ func newModel(cfg ModelConfig) model {
 		version:          cfg.Version,
 		mcpStatus:        cfg.MCPStatus,
 		settings:         cfg.Settings,
+		ruleHandler:      cfg.RuleHandler,
 		onModelSwitch:    cfg.OnModelSwitch,
 		mode:             modeInput,
 		width:            cfg.Width,
@@ -211,4 +216,37 @@ func applyFastMode(m *model, enabled bool) {
 		m.modelName = resolved
 		m.loop.SetModel(resolved)
 	}
+}
+
+// getPermissionMode returns the current permission mode from the rule handler.
+func (m *model) getPermissionMode() config.PermissionMode {
+	if m.ruleHandler == nil {
+		return config.ModeDefault
+	}
+	return m.ruleHandler.GetPermissionContext().GetMode()
+}
+
+// setPermissionMode changes the permission mode on the rule handler.
+func (m *model) setPermissionMode(mode config.PermissionMode) {
+	if m.ruleHandler == nil {
+		return
+	}
+	m.ruleHandler.GetPermissionContext().SetMode(mode)
+}
+
+// isBypassAvailable returns whether bypass mode can be cycled to.
+func (m *model) isBypassAvailable() bool {
+	if m.ruleHandler == nil {
+		return false
+	}
+	return m.ruleHandler.GetPermissionContext().GetIsBypassAvailable()
+}
+
+// cyclePermissionMode advances to the next permission mode and returns
+// the new mode and a display string for scrollback output.
+func (m *model) cyclePermissionMode() config.PermissionMode {
+	current := m.getPermissionMode()
+	next := config.CycleMode(current, m.isBypassAvailable())
+	m.setPermissionMode(next)
+	return next
 }

@@ -31,6 +31,88 @@ const (
 	ModeDontAsk           PermissionMode = "dontAsk"
 )
 
+// PermissionModeInfo contains display metadata for a permission mode.
+type PermissionModeInfo struct {
+	Mode       PermissionMode
+	Title      string // Full display name (e.g. "Accept edits")
+	ShortTitle string // Abbreviated name for status bar (e.g. "Accept")
+	Symbol     string // Unicode symbol shown in status bar
+}
+
+// AllModes is the canonical list of permission modes in cycling order.
+var AllModes = []PermissionMode{
+	ModeDefault,
+	ModeAcceptEdits,
+	ModePlan,
+	ModeBypassPermissions,
+}
+
+// ModeInfoMap maps each mode to its display metadata.
+var ModeInfoMap = map[PermissionMode]PermissionModeInfo{
+	ModeDefault: {
+		Mode:       ModeDefault,
+		Title:      "Default",
+		ShortTitle: "Default",
+		Symbol:     "",
+	},
+	ModePlan: {
+		Mode:       ModePlan,
+		Title:      "Plan Mode",
+		ShortTitle: "Plan",
+		Symbol:     "\u23F8", // ⏸
+	},
+	ModeAcceptEdits: {
+		Mode:       ModeAcceptEdits,
+		Title:      "Accept edits",
+		ShortTitle: "Accept",
+		Symbol:     "\u23F5\u23F5", // ⏵⏵
+	},
+	ModeBypassPermissions: {
+		Mode:       ModeBypassPermissions,
+		Title:      "Bypass Permissions",
+		ShortTitle: "Bypass",
+		Symbol:     "\u23F5\u23F5", // ⏵⏵
+	},
+	ModeDontAsk: {
+		Mode:       ModeDontAsk,
+		Title:      "Don't Ask",
+		ShortTitle: "DontAsk",
+		Symbol:     "\u23F5\u23F5", // ⏵⏵
+	},
+}
+
+// CycleMode returns the next permission mode in the cycling order.
+// The cycle is: default → acceptEdits → plan → [bypassPermissions if available] → default.
+// dontAsk always cycles to default.
+func CycleMode(current PermissionMode, bypassAvailable bool) PermissionMode {
+	switch current {
+	case ModeDefault:
+		return ModeAcceptEdits
+	case ModeAcceptEdits:
+		return ModePlan
+	case ModePlan:
+		if bypassAvailable {
+			return ModeBypassPermissions
+		}
+		return ModeDefault
+	case ModeBypassPermissions:
+		return ModeDefault
+	case ModeDontAsk:
+		return ModeDefault
+	default:
+		return ModeDefault
+	}
+}
+
+// ValidPermissionMode returns true if the given string is a valid permission mode.
+func ValidPermissionMode(s string) bool {
+	switch PermissionMode(s) {
+	case ModeDefault, ModePlan, ModeAcceptEdits, ModeBypassPermissions, ModeDontAsk:
+		return true
+	}
+	return false
+}
+
 // DecisionReasonType describes why a permission decision was made.
 type DecisionReasonType string
 
@@ -71,6 +153,7 @@ type PermissionResult struct {
 type ToolPermissionContext struct {
 	mu                          sync.RWMutex
 	Mode                        PermissionMode        `json:"mode"`
+	IsBypassAvailable           bool                   `json:"isBypassPermissionsModeAvailable"`
 	AlwaysAllowRules            map[string][]string    `json:"alwaysAllowRules"`
 	AlwaysDenyRules             map[string][]string    `json:"alwaysDenyRules"`
 	AlwaysAskRules              map[string][]string    `json:"alwaysAskRules"`
@@ -81,6 +164,7 @@ type ToolPermissionContext struct {
 func NewToolPermissionContext() *ToolPermissionContext {
 	return &ToolPermissionContext{
 		Mode:                         ModeDefault,
+		IsBypassAvailable:           false,
 		AlwaysAllowRules:             make(map[string][]string),
 		AlwaysDenyRules:              make(map[string][]string),
 		AlwaysAskRules:               make(map[string][]string),
@@ -100,6 +184,20 @@ func (c *ToolPermissionContext) GetMode() PermissionMode {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.Mode
+}
+
+// GetIsBypassAvailable returns whether bypass permissions mode can be cycled to.
+func (c *ToolPermissionContext) GetIsBypassAvailable() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.IsBypassAvailable
+}
+
+// SetIsBypassAvailable sets whether bypass permissions mode can be cycled to.
+func (c *ToolPermissionContext) SetIsBypassAvailable(available bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.IsBypassAvailable = available
 }
 
 // AddRules adds session-level rules for the given behavior and destination.

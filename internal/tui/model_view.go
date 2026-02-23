@@ -58,7 +58,7 @@ func (m model) View() string {
 		b.WriteString(m.renderConfigPanel())
 		b.WriteString("\n")
 		// Status bar.
-		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
+		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode, m.getPermissionMode()))
 		return b.String()
 	}
 
@@ -110,7 +110,7 @@ func (m model) View() string {
 	if m.statusLineText != "" {
 		b.WriteString(statusBarStyle.Render(m.statusLineText))
 	} else {
-		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
+		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode, m.getPermissionMode()))
 	}
 
 	return b.String()

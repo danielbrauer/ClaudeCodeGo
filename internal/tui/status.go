@@ -1,6 +1,10 @@
 package tui
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/anthropics/claude-code-go/internal/config"
+)
 
 // tokenTracker accumulates token usage across the session.
 type tokenTracker struct {
@@ -29,7 +33,7 @@ func (t *tokenTracker) addOutput(outputTokens int) {
 }
 
 // renderStatusBar returns the formatted status bar string.
-func renderStatusBar(model string, tracker *tokenTracker, width int, fastMode bool) string {
+func renderStatusBar(model string, tracker *tokenTracker, width int, fastMode bool, permMode config.PermissionMode) string {
 	modelStr := statusModelStyle.Render(model)
 	tokensStr := fmt.Sprintf("%s in / %s out",
 		formatTokenCount(tracker.TotalInputTokens),
@@ -38,6 +42,29 @@ func renderStatusBar(model string, tracker *tokenTracker, width int, fastMode bo
 	parts := modelStr + "  " + tokensStr
 	if fastMode {
 		parts += "  " + fastModeStyle.Render("⚡ Fast")
+	}
+
+	// Show permission mode indicator (only when not in default mode).
+	if permMode != config.ModeDefault && permMode != "" {
+		info, ok := config.ModeInfoMap[permMode]
+		if ok {
+			modeText := info.ShortTitle
+			if info.Symbol != "" {
+				modeText = info.Symbol + " " + modeText
+			}
+			var rendered string
+			switch permMode {
+			case config.ModeBypassPermissions:
+				rendered = bypassModeStyle.Render(modeText)
+			case config.ModePlan:
+				rendered = planModeStyle.Render(modeText)
+			case config.ModeAcceptEdits:
+				rendered = autoAcceptStyle.Render(modeText)
+			default:
+				rendered = statusBarStyle.Render(modeText)
+			}
+			parts += "  " + rendered
+		}
 	}
 
 	return statusBarStyle.Render(parts)

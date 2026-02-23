@@ -71,7 +71,7 @@ func TestSlashRegistry_Complete(t *testing.T) {
 		want   []string
 	}{
 		{"he", []string{"help"}},
-		{"m", []string{"mcp", "memory", "model"}},
+		{"m", []string{"mcp", "memory", "mode", "model"}},
 		{"co", []string{"compact", "config", "context", "continue", "cost"}},
 		{"qu", []string{"quit"}},
 		{"init", []string{"init"}},

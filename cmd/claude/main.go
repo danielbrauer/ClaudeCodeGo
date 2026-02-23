@@ -88,6 +88,8 @@ func main() {
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	loginFlag := flag.Bool("login", false, "Log in with OAuth")
 	dangerousNoPermissions := flag.Bool("dangerously-skip-permissions", false, "Skip all permission prompts (use with caution)")
+	allowBypassMode := flag.Bool("allow-dangerously-skip-permissions", false, "Allow cycling to bypass permissions mode via Shift+Tab")
+	permissionModeFlag := flag.String("permission-mode", "", "Initial permission mode: default, plan, acceptEdits, bypassPermissions")
 	outputFormat := flag.String("output-format", "text", "Output format: text, json, stream-json")
 	flag.Parse()
 
@@ -191,7 +193,25 @@ func main() {
 	// Set up permission handler with rule-based evaluation.
 	var permHandler tools.PermissionHandler
 	var ruleHandler *config.RuleBasedPermissionHandler
+
+	// Determine initial permission mode from flags.
+	initialMode := config.ModeDefault
 	if *dangerousNoPermissions {
+		initialMode = config.ModeBypassPermissions
+	}
+	if *permissionModeFlag != "" {
+		if config.ValidPermissionMode(*permissionModeFlag) {
+			initialMode = config.PermissionMode(*permissionModeFlag)
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: invalid permission mode %q, using default\n", *permissionModeFlag)
+		}
+	}
+
+	bypassAvailable := *allowBypassMode || *dangerousNoPermissions
+
+	if *dangerousNoPermissions && *permissionModeFlag == "" {
+		// Legacy behavior: --dangerously-skip-permissions with no explicit mode
+		// uses the AlwaysAllow handler for maximum compatibility.
 		permHandler = &tools.AlwaysAllowPermissionHandler{}
 	} else {
 		terminalHandler := tools.NewTerminalPermissionHandler()
@@ -199,6 +219,10 @@ func main() {
 			settings.Permissions,
 			terminalHandler,
 		)
+		// Apply initial mode and bypass availability.
+		permCtx := ruleHandler.GetPermissionContext()
+		permCtx.SetMode(initialMode)
+		permCtx.SetIsBypassAvailable(bypassAvailable)
 		permHandler = ruleHandler
 	}
 
