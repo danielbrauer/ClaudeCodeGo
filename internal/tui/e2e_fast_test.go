@@ -19,11 +19,8 @@ func TestE2E_FastCommand_ToggleOn(t *testing.T) {
 	if !ok {
 		t.Fatal("/fast not registered")
 	}
-	output := cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
-	if output != "Fast mode ON" {
-		t.Errorf("fast output = %q, want 'Fast mode ON'", output)
-	}
 	if !m.fastMode {
 		t.Error("fastMode should be true after toggle on")
 	}
@@ -39,11 +36,8 @@ func TestE2E_FastCommand_ToggleOff(t *testing.T) {
 	m.fastMode = true // ensure it's on
 
 	cmd, _ := m.slashReg.lookup("fast")
-	output := cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
-	if output != "Fast mode OFF" {
-		t.Errorf("fast output = %q, want 'Fast mode OFF'", output)
-	}
 	if m.fastMode {
 		t.Error("fastMode should be false after toggle off")
 	}
@@ -59,10 +53,10 @@ func TestE2E_FastCommand_AutoSwitchesToOpus(t *testing.T) {
 	)
 
 	cmd, _ := m.slashReg.lookup("fast")
-	output := cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
-	if output != "Fast mode ON" {
-		t.Errorf("fast output = %q, want 'Fast mode ON'", output)
+	if !m.fastMode {
+		t.Error("fastMode should be true after toggle on")
 	}
 
 	// Should have auto-switched to Opus.
@@ -82,7 +76,7 @@ func TestE2E_FastCommand_NoAutoSwitchWhenAlreadyOpus(t *testing.T) {
 	)
 
 	cmd, _ := m.slashReg.lookup("fast")
-	cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
 	// Model should remain the same Opus model.
 	if m.modelName != opusModel {
@@ -99,7 +93,7 @@ func TestE2E_FastCommand_PersistsToSettings(t *testing.T) {
 	)
 
 	cmd, _ := m.slashReg.lookup("fast")
-	cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
 	// Toggle on should persist. We can't easily read the file without knowing
 	// the full path, but we verify the model state is correct.
@@ -122,21 +116,21 @@ func TestE2E_FastCommand_ToggleRoundTrip(t *testing.T) {
 	cmd, _ := m.slashReg.lookup("fast")
 
 	// On.
-	output := cmd.Execute(&m)
-	if output != "Fast mode ON" {
-		t.Errorf("first toggle = %q, want ON", output)
+	cmd.Execute(&m, "")
+	if !m.fastMode {
+		t.Error("first toggle should turn fast mode ON")
 	}
 
 	// Off.
-	output = cmd.Execute(&m)
-	if output != "Fast mode OFF" {
-		t.Errorf("second toggle = %q, want OFF", output)
+	cmd.Execute(&m, "")
+	if m.fastMode {
+		t.Error("second toggle should turn fast mode OFF")
 	}
 
 	// On again.
-	output = cmd.Execute(&m)
-	if output != "Fast mode ON" {
-		t.Errorf("third toggle = %q, want ON", output)
+	cmd.Execute(&m, "")
+	if !m.fastMode {
+		t.Error("third toggle should turn fast mode ON")
 	}
 }
 
@@ -155,7 +149,7 @@ func TestE2E_FastSync_SlashUpdatesSettings(t *testing.T) {
 	)
 
 	cmd, _ := m.slashReg.lookup("fast")
-	cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
 	// m.fastMode should be true.
 	if !m.fastMode {
@@ -168,7 +162,7 @@ func TestE2E_FastSync_SlashUpdatesSettings(t *testing.T) {
 	}
 
 	// Toggle off.
-	cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
 	if m.fastMode {
 		t.Error("m.fastMode should be false after /fast toggle off")
@@ -263,7 +257,7 @@ func TestE2E_FastSync_SlashOnThenConfigOff(t *testing.T) {
 
 	// Enable via /fast.
 	cmd, _ := m.slashReg.lookup("fast")
-	cmd.Execute(&m)
+	cmd.Execute(&m, "")
 	if !m.fastMode {
 		t.Fatal("fast mode should be on after /fast")
 	}
@@ -321,7 +315,7 @@ func TestE2E_FastSync_ConfigOnThenSlashOff(t *testing.T) {
 
 	// Disable via /fast.
 	cmd, _ := m.slashReg.lookup("fast")
-	cmd.Execute(&m)
+	cmd.Execute(&m, "")
 
 	if m.fastMode {
 		t.Error("m.fastMode should be false after /fast off")

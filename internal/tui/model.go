@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -126,6 +125,10 @@ type model struct {
 	promptSuggestion string // cached suggestion text (e.g., `Try "edit app.go to..."`)
 	submitCount      int    // number of user messages sent in the session
 
+	// Dynamic prompt suggestion (generated after each turn via API).
+	dynSuggestion          string // suggested next prompt text (shown as placeholder)
+	dynSuggestionGenerating bool  // true while an API call is in-flight
+
 	// Status line (custom command-based status bar).
 	statusLineText string // last output from the status line command
 
@@ -136,54 +139,60 @@ type model struct {
 	exitAction ExitAction
 }
 
+// ModelConfig bundles the parameters for creating a new TUI model.
+// This avoids a long parameter list in newModel and makes it easier to add
+// new fields without changing the function signature.
+type ModelConfig struct {
+	Loop          *conversation.Loop
+	Ctx           context.Context
+	CancelFn      context.CancelFunc
+	ModelName     string
+	Version       string
+	InitialPrompt string
+	Width         int
+	MCPStatus     MCPStatus
+	Skills        []skills.Skill
+	SessStore     *session.Store
+	Session       *session.Session
+	Settings      *config.Settings
+	OnModelSwitch func(newModel string)
+	LogoutFunc    func() error
+	FastMode      bool
+}
+
 // newModel creates the initial Bubble Tea model.
-func newModel(
-	loop *conversation.Loop,
-	ctx context.Context,
-	cancelFn context.CancelFunc,
-	modelName, version string,
-	initialPrompt string,
-	width int,
-	mcpStatus MCPStatus,
-	loadedSkills []skills.Skill,
-	sessStore *session.Store,
-	sess *session.Session,
-	settings *config.Settings,
-	onModelSwitch func(newModel string),
-	logoutFunc func() error,
-	fastMode bool,
-) model {
-	ti := newTextInput(width)
+func newModel(cfg ModelConfig) model {
+	ti := newTextInput(cfg.Width)
 	sp := newSpinner()
-	md := newMarkdownRenderer(width)
+	md := newMarkdownRenderer(cfg.Width)
 	slash := newSlashRegistry()
 
 	// Phase 7: Register skill-based slash commands.
-	if len(loadedSkills) > 0 {
-		slash.registerSkills(loadedSkills)
+	if len(cfg.Skills) > 0 {
+		slash.registerSkills(cfg.Skills)
 	}
 
 	return model{
-		loop:             loop,
-		ctx:              ctx,
-		cancelFn:         cancelFn,
-		modelName:        modelName,
-		version:          version,
-		mcpStatus:        mcpStatus,
-		settings:         settings,
-		onModelSwitch:    onModelSwitch,
+		loop:             cfg.Loop,
+		ctx:              cfg.Ctx,
+		cancelFn:         cfg.CancelFn,
+		modelName:        cfg.ModelName,
+		version:          cfg.Version,
+		mcpStatus:        cfg.MCPStatus,
+		settings:         cfg.Settings,
+		onModelSwitch:    cfg.OnModelSwitch,
 		mode:             modeInput,
-		width:            width,
+		width:            cfg.Width,
 		height:           24,
 		textInput:        ti,
 		spinner:          sp,
 		mdRenderer:       md,
 		slashReg:         slash,
-		logoutFunc:       logoutFunc,
-		initialPrompt:    initialPrompt,
-		sessStore:        sessStore,
-		session:          sess,
-		fastMode:         fastMode,
+		logoutFunc:       cfg.LogoutFunc,
+		initialPrompt:    cfg.InitialPrompt,
+		sessStore:        cfg.SessStore,
+		session:          cfg.Session,
+		fastMode:         cfg.FastMode,
 		promptSuggestion: generatePromptSuggestion(),
 	}
 }
@@ -308,7 +317,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Println(errLine))
 		}
 		m.activeTool = ""
-
+		// Clear any previous dynamic suggestion.
+		m.dynSuggestion = ""
 		// Refresh the custom status line after each assistant turn.
 		if cmd := m.refreshStatusLine(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -323,7 +333,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.mode = modeInput
 		m.textInput.Focus()
+		// Generate a dynamic prompt suggestion for the next turn.
+		if m.apiClient != nil && msg.Err == nil && m.ctx.Err() == nil {
+			m.dynSuggestionGenerating = true
+			msgs := m.loop.History().Messages()
+			// Copy messages to avoid races with the main loop.
+			msgsCopy := make([]api.Message, len(msgs))
+			copy(msgsCopy, msgs)
+			cmds = append(cmds, generatePromptSuggestionCmd(m.ctx, m.apiClient, msgsCopy))
+		}
 		return m, tea.Batch(append(cmds, textarea.Blink)...)
+
+	case promptSuggestionResult:
+		m.dynSuggestionGenerating = false
+		m.dynSuggestion = msg.text
+		return m, nil
 
 	// ── Memory edit done ──
 	case MemoryEditDoneMsg:
@@ -426,6 +450,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyTab:
+			// If the input is empty and we have a dynamic suggestion,
+			// accept it by filling it into the text input.
+			if strings.TrimSpace(m.textInput.Value()) == "" && m.dynSuggestion != "" {
+				m.textInput.SetValue(m.dynSuggestion)
+				m.textInput.CursorEnd()
+				return m, nil
+			}
 			return m.handleTabComplete()
 
 		case tea.KeyShiftTab:
@@ -436,14 +467,28 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.clearCompletions()
 				return m, nil
 			}
+			// Escape clears the dynamic suggestion.
+			if m.dynSuggestion != "" {
+				m.dynSuggestion = ""
+				return m, nil
+			}
 			return m, nil
 
 		case tea.KeyEnter:
 			m.clearCompletions()
 			text := strings.TrimSpace(m.textInput.Value())
+			// If input is empty but we have a dynamic suggestion,
+			// submit the suggestion directly.
+			if text == "" && m.dynSuggestion != "" {
+				text = m.dynSuggestion
+				m.dynSuggestion = ""
+				m.textInput.Reset()
+				return m.handleSubmit(text)
+			}
 			if text == "" {
 				return m, nil
 			}
+			m.dynSuggestion = "" // clear suggestion on any submit
 			m.textInput.Reset()
 			return m.handleSubmit(text)
 
@@ -463,6 +508,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Clear completions when the user types — they'll re-trigger on Tab.
 			if len(m.completions) > 0 {
 				m.clearCompletions()
+			}
+			// Clear the dynamic suggestion once the user starts typing
+			// their own text.
+			if m.dynSuggestion != "" && m.textInput.Value() != "" {
+				m.dynSuggestion = ""
 			}
 			return m, cmd
 		}
@@ -549,6 +599,10 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		cmdName := strings.TrimPrefix(text, "/")
 		parts := strings.SplitN(cmdName, " ", 2)
 		cmdName = parts[0]
+		cmdArgs := ""
+		if len(parts) > 1 {
+			cmdArgs = parts[1]
+		}
 
 		// Fuzzy auto-correct: if the command isn't an exact match, try to
 		// find the best fuzzy match and silently correct it.
@@ -557,230 +611,15 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 				hint := permHintStyle.Render(fmt.Sprintf("  (corrected /%s → /%s)", cmdName, best))
 				cmds = append(cmds, tea.Println(hint))
 				cmdName = best
-				parts[0] = best
 			}
-		}
-
-		if cmdName == "quit" || cmdName == "exit" {
-			m.quitting = true
-			return m, tea.Quit
-		}
-
-		if cmdName == "help" {
-			m.helpTab = 0
-			m.helpScrollOff = 0
-			m.mode = modeHelp
-			m.textInput.Blur()
-			return m, tea.Batch(cmds...)
-		}
-
-		if cmdName == "config" || cmdName == "settings" {
-			if m.settings != nil {
-				m.configPanel = newConfigPanel(m.settings)
-				m.mode = modeConfig
-				m.textInput.Blur()
-			} else {
-				cmds = append(cmds, tea.Println(errorStyle.Render("No settings loaded.")))
-			}
-			return m, tea.Batch(cmds...)
-		}
-
-		if cmdName == "login" {
-			cmds = append(cmds, tea.Println("Exiting session for re-authentication..."))
-			m.exitAction = ExitLogin
-			m.quitting = true
-			return m, tea.Batch(append(cmds, tea.Quit)...)
-		}
-
-		if cmdName == "logout" {
-			if m.logoutFunc != nil {
-				if err := m.logoutFunc(); err != nil {
-					cmds = append(cmds, tea.Println(errorStyle.Render("Failed to log out.")))
-					return m, tea.Batch(cmds...)
-				}
-			}
-			cmds = append(cmds, tea.Println("Successfully logged out from your Anthropic account."))
-			m.quitting = true
-			return m, tea.Batch(append(cmds, tea.Quit)...)
-		}
-
-		if cmdName == "compact" {
-			m.mode = modeStreaming
-			return m, func() tea.Msg {
-				err := m.loop.Compact(m.ctx)
-				if err != nil {
-					return LoopDoneMsg{Err: err}
-				}
-				return LoopDoneMsg{}
-			}
-		}
-
-		if cmdName == "resume" {
-			if m.sessStore == nil {
-				cmds = append(cmds, tea.Println(errorStyle.Render("Session store not available.")))
-				return m, tea.Batch(cmds...)
-			}
-			sessions, err := m.sessStore.List()
-			if err != nil || len(sessions) == 0 {
-				cmds = append(cmds, tea.Println(errorStyle.Render("No sessions found.")))
-				return m, tea.Batch(cmds...)
-			}
-			m.resumeSessions = sessions
-			m.resumeCursor = 0
-			m.mode = modeResume
-			m.textInput.Blur()
-			return m, tea.Batch(cmds...)
-		}
-
-		if cmdName == "continue" {
-			if m.sessStore == nil {
-				cmds = append(cmds, tea.Println(errorStyle.Render("Session store not available.")))
-				return m, tea.Batch(cmds...)
-			}
-			sess, err := m.sessStore.MostRecent()
-			if err != nil {
-				cmds = append(cmds, tea.Println(errorStyle.Render("No previous session found.")))
-				return m, tea.Batch(cmds...)
-			}
-			// Switch to the most recent session directly.
-			m.session.ID = sess.ID
-			m.session.Model = sess.Model
-			m.session.CWD = sess.CWD
-			m.session.Messages = sess.Messages
-			m.session.CreatedAt = sess.CreatedAt
-			m.session.UpdatedAt = sess.UpdatedAt
-			m.loop.History().SetMessages(sess.Messages)
-
-			summary := sessionSummary(sess)
-			line := resumeHeaderStyle.Render("Resumed session ") +
-				resumeIDStyle.Render(sess.ID) +
-				resumeHeaderStyle.Render(" ("+summary+")")
-			cmds = append(cmds, tea.Println(line))
-			return m, tea.Batch(cmds...)
-		}
-
-		if cmdName == "clear" || cmdName == "reset" || cmdName == "new" {
-			// Clear conversation history.
-			m.loop.Clear()
-
-			// Reset token tracking.
-			m.tokens = tokenTracker{}
-
-			// Clear todo list.
-			m.todos = nil
-
-			// Clear any queued messages.
-			m.queue.Clear()
-
-			// Create a new session, preserving the model and CWD.
-			if m.session != nil {
-				m.session = &session.Session{
-					ID:    session.GenerateID(),
-					Model: m.session.Model,
-					CWD:   m.session.CWD,
-				}
-
-				// Update the turn-complete callback to reference the new session.
-				newSess := m.session
-				store := m.sessStore
-				m.loop.SetOnTurnComplete(func(h *conversation.History) {
-					if store != nil && newSess != nil {
-						newSess.Messages = h.Messages()
-						_ = store.Save(newSess)
-					}
-				})
-
-				if m.sessStore != nil {
-					if err := m.sessStore.Save(m.session); err != nil {
-						errLine := errorStyle.Render("Warning: failed to save new session: " + err.Error())
-						cmds = append(cmds, tea.Println(errLine))
-					}
-				}
-			}
-
-			cmds = append(cmds, tea.Println("Conversation cleared. Starting fresh."))
-			return m, tea.Batch(cmds...)
-		}
-
-		if cmdName == "memory" {
-			arg := ""
-			if len(parts) > 1 {
-				arg = strings.TrimSpace(parts[1])
-			}
-			cwd, _ := os.Getwd()
-			filePath := memoryFilePath(arg, cwd)
-			editorCmd, err := editorCommand(filePath)
-			if err != nil {
-				cmds = append(cmds, tea.Println("Error: "+err.Error()))
-				return m, tea.Batch(cmds...)
-			}
-			execCb := func(err error) tea.Msg {
-				return MemoryEditDoneMsg{Path: filePath, Err: err}
-			}
-			return m, tea.Batch(append(cmds, tea.ExecProcess(editorCmd, execCb))...)
-		}
-
-		if cmdName == "init" {
-			m.mode = modeStreaming
-			m.textInput.Blur()
-			loopCmd := func() tea.Msg {
-				err := m.loop.SendMessage(m.ctx, initPrompt)
-				return LoopDoneMsg{Err: err}
-			}
-			cmds = append(cmds, loopCmd, m.spinner.Tick)
-			return m, tea.Batch(cmds...)
-		}
-
-		if cmdName == "model" {
-			return m.handleModelCommand(parts)
-		}
-
-		if cmdName == "diff" {
-			m.mode = modeDiff
-			m.diffData = nil
-			return m, tea.Batch(
-				func() tea.Msg {
-					data := loadDiffData()
-					return DiffLoadedMsg{Data: data}
-				},
-				m.spinner.Tick,
-			)
-		}
-
-		if cmdName == "review" {
-			// Extract optional argument (PR number).
-			arg := ""
-			if len(parts) > 1 {
-				arg = strings.TrimSpace(parts[1])
-			}
-			reviewPrompt := buildReviewPrompt(arg)
-			m.mode = modeStreaming
-			m.textInput.Blur()
-			loopCmd := func() tea.Msg {
-				err := m.loop.SendMessage(m.ctx, reviewPrompt)
-				return LoopDoneMsg{Err: err}
-			}
-			cmds = append(cmds, loopCmd, m.spinner.Tick)
-			return m, tea.Batch(cmds...)
 		}
 
 		if cmd, ok := m.slashReg.lookup(cmdName); ok && cmd.Execute != nil {
-			output := cmd.Execute(&m)
-			// Phase 7: Skill slash commands return a sentinel prefix.
-			// When detected, send the skill content as a user message.
-			if strings.HasPrefix(output, skillCommandPrefix) {
-				skillContent := strings.TrimPrefix(output, skillCommandPrefix)
-				m.mode = modeStreaming
-				m.textInput.Blur()
-				loopCmd := func() tea.Msg {
-					err := m.loop.SendMessage(m.ctx, skillContent)
-					return LoopDoneMsg{Err: err}
-				}
-				cmds = append(cmds, loopCmd, m.spinner.Tick)
-				return m, tea.Batch(cmds...)
+			result, cmdCmd := cmd.Execute(&m, cmdArgs)
+			if cmdCmd != nil {
+				cmds = append(cmds, cmdCmd)
 			}
-			cmds = append(cmds, tea.Println(output))
-			return m, tea.Batch(cmds...)
+			return result, tea.Batch(cmds...)
 		}
 
 		errMsg := "Unknown command: /" + cmdName + " (type /help for available commands)"
@@ -1164,13 +1003,20 @@ func (m model) View() string {
 		b.WriteString("\n")
 
 		if m.mode == modeInput {
-			// Set placeholder dynamically: show suggestion only when the
-			// conversation is empty and the input field is blank.
-			if m.submitCount < 1 && m.textInput.Value() == "" {
-				if m.queue.Len() > 0 {
-					m.textInput.Placeholder = "Press Esc to remove queued messages"
+			// Set placeholder dynamically: show a suggestion when the input
+			// field is blank. Prioritize dynamic suggestions, then static
+			// template suggestions before the first submit.
+			if m.textInput.Value() == "" {
+				if m.dynSuggestion != "" {
+					m.textInput.Placeholder = m.dynSuggestion
+				} else if m.submitCount < 1 {
+					if m.queue.Len() > 0 {
+						m.textInput.Placeholder = "Press Esc to remove queued messages"
+					} else {
+						m.textInput.Placeholder = m.promptSuggestion
+					}
 				} else {
-					m.textInput.Placeholder = m.promptSuggestion
+					m.textInput.Placeholder = ""
 				}
 			} else {
 				m.textInput.Placeholder = ""
@@ -1189,8 +1035,13 @@ func (m model) View() string {
 
 		// Hints line below the input area.
 		if m.mode == modeInput && len(m.completions) == 0 {
-			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
-			b.WriteString("\n")
+			if m.dynSuggestion != "" && m.textInput.Value() == "" {
+				b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
+				b.WriteString("\n")
+			} else {
+				b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
+				b.WriteString("\n")
+			}
 		} else if m.mode == modeStreaming {
 			hint := "Enter to queue message"
 			if m.queue.Len() > 0 {
