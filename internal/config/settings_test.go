@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -285,5 +286,231 @@ func TestMergeSettings(t *testing.T) {
 	}
 	if result.Permissions[0].Pattern != "npm *" {
 		t.Errorf("Perm[0].Pattern = %q, want %q", result.Permissions[0].Pattern, "npm *")
+	}
+}
+
+func TestBoolVal(t *testing.T) {
+	tests := []struct {
+		name string
+		p    *bool
+		def  bool
+		want bool
+	}{
+		{"nil_default_true", nil, true, true},
+		{"nil_default_false", nil, false, false},
+		{"true_ptr", BoolPtr(true), false, true},
+		{"false_ptr", BoolPtr(false), true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BoolVal(tt.p, tt.def)
+			if got != tt.want {
+				t.Errorf("BoolVal = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoolPtr(t *testing.T) {
+	p := BoolPtr(true)
+	if p == nil || *p != true {
+		t.Errorf("BoolPtr(true) = %v, want &true", p)
+	}
+	p = BoolPtr(false)
+	if p == nil || *p != false {
+		t.Errorf("BoolPtr(false) = %v, want &false", p)
+	}
+}
+
+func TestMergeSettingsUserPreferences(t *testing.T) {
+	base := &Settings{
+		AutoCompactEnabled: BoolPtr(true),
+		EditorMode:         "normal",
+		Theme:              "dark",
+	}
+	overlay := &Settings{
+		AutoCompactEnabled: BoolPtr(false),
+		FastMode:           BoolPtr(true),
+		EditorMode:         "vim",
+	}
+
+	result := mergeSettings(base, overlay)
+
+	// AutoCompact: overlay wins.
+	if result.AutoCompactEnabled == nil || *result.AutoCompactEnabled != false {
+		t.Errorf("AutoCompactEnabled = %v, want false", result.AutoCompactEnabled)
+	}
+	// FastMode: overlay has it, base doesn't.
+	if result.FastMode == nil || *result.FastMode != true {
+		t.Errorf("FastMode = %v, want true", result.FastMode)
+	}
+	// EditorMode: overlay wins.
+	if result.EditorMode != "vim" {
+		t.Errorf("EditorMode = %q, want %q", result.EditorMode, "vim")
+	}
+	// Theme: base preserved since overlay is empty.
+	if result.Theme != "dark" {
+		t.Errorf("Theme = %q, want %q", result.Theme, "dark")
+	}
+}
+
+func TestMergeSettingsUserPreferencesBaseOnly(t *testing.T) {
+	base := &Settings{
+		Verbose:          BoolPtr(true),
+		ThinkingEnabled:  BoolPtr(false),
+		RespectGitignore: BoolPtr(false),
+		DiffTool:         "terminal",
+		NotifChannel:     "iterm2",
+	}
+	overlay := &Settings{} // empty overlay
+
+	result := mergeSettings(base, overlay)
+
+	if result.Verbose == nil || *result.Verbose != true {
+		t.Errorf("Verbose = %v, want true", result.Verbose)
+	}
+	if result.ThinkingEnabled == nil || *result.ThinkingEnabled != false {
+		t.Errorf("ThinkingEnabled = %v, want false", result.ThinkingEnabled)
+	}
+	if result.RespectGitignore == nil || *result.RespectGitignore != false {
+		t.Errorf("RespectGitignore = %v, want false", result.RespectGitignore)
+	}
+	if result.DiffTool != "terminal" {
+		t.Errorf("DiffTool = %q, want %q", result.DiffTool, "terminal")
+	}
+	if result.NotifChannel != "iterm2" {
+		t.Errorf("NotifChannel = %q, want %q", result.NotifChannel, "iterm2")
+	}
+}
+
+func TestSaveUserSetting_NewFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	err := SaveUserSetting("fastMode", true)
+	if err != nil {
+		t.Fatalf("SaveUserSetting: %v", err)
+	}
+
+	// Read back and verify.
+	path := filepath.Join(home, ".claude", "settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var settings map[string]interface{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if val, ok := settings["fastMode"]; !ok {
+		t.Error("fastMode key not found in saved settings")
+	} else if val != true {
+		t.Errorf("fastMode = %v, want true", val)
+	}
+}
+
+func TestSaveUserSetting_ExistingFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{
+  "model": "opus",
+  "verbose": false
+}`), 0644)
+
+	err := SaveUserSetting("verbose", true)
+	if err != nil {
+		t.Fatalf("SaveUserSetting: %v", err)
+	}
+
+	// Read back.
+	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	var settings map[string]interface{}
+	json.Unmarshal(data, &settings)
+
+	// verbose should be updated.
+	if val := settings["verbose"]; val != true {
+		t.Errorf("verbose = %v, want true", val)
+	}
+	// model should be preserved.
+	if val := settings["model"]; val != "opus" {
+		t.Errorf("model = %v, want opus", val)
+	}
+}
+
+func TestSaveUserSetting_CorruptFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{corrupt json`), 0644)
+
+	// Should not error; starts fresh.
+	err := SaveUserSetting("theme", "light")
+	if err != nil {
+		t.Fatalf("SaveUserSetting on corrupt file: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	var settings map[string]interface{}
+	json.Unmarshal(data, &settings)
+
+	if val := settings["theme"]; val != "light" {
+		t.Errorf("theme = %v, want light", val)
+	}
+}
+
+func TestLoadSettingsUserPreferences(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	claudeDir := filepath.Join(home, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(`{
+		"autoCompactEnabled": false,
+		"editorMode": "vim",
+		"theme": "light",
+		"fastMode": true
+	}`), 0644)
+
+	settings, err := LoadSettings(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+
+	if settings.AutoCompactEnabled == nil || *settings.AutoCompactEnabled != false {
+		t.Errorf("AutoCompactEnabled = %v, want false", settings.AutoCompactEnabled)
+	}
+	if settings.EditorMode != "vim" {
+		t.Errorf("EditorMode = %q, want %q", settings.EditorMode, "vim")
+	}
+	if settings.Theme != "light" {
+		t.Errorf("Theme = %q, want %q", settings.Theme, "light")
+	}
+	if settings.FastMode == nil || *settings.FastMode != true {
+		t.Errorf("FastMode = %v, want true", settings.FastMode)
+	}
+}
+
+func TestUserSettingsPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path, err := UserSettingsPath()
+	if err != nil {
+		t.Fatalf("UserSettingsPath: %v", err)
+	}
+	expected := filepath.Join(home, ".claude", "settings.json")
+	if path != expected {
+		t.Errorf("UserSettingsPath = %q, want %q", path, expected)
 	}
 }

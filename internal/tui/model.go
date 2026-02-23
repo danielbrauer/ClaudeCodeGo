@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/anthropics/claude-code-go/internal/api"
+	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/conversation"
 	"github.com/anthropics/claude-code-go/internal/session"
 	"github.com/anthropics/claude-code-go/internal/skills"
@@ -30,6 +31,7 @@ const (
 	modeResume                   // session picker for /resume
 	modeModelPicker              // choosing a model via /model
 	modeDiff                     // viewing diff dialog
+	modeConfig                   // config panel open
 )
 
 // model is the Bubble Tea model for the TUI.
@@ -94,6 +96,10 @@ type model struct {
 	diffSelected int    // selected file index
 	diffViewMode string // "list" or "detail"
 
+	// Config panel state.
+	configPanel *configPanel
+	settings    *config.Settings // reference to live settings
+
 	// Initial prompt to send on start.
 	initialPrompt string
 
@@ -116,6 +122,7 @@ func newModel(
 	loadedSkills []skills.Skill,
 	sessStore *session.Store,
 	sess *session.Session,
+	settings *config.Settings,
 	onModelSwitch func(newModel string),
 	logoutFunc func() error,
 ) model {
@@ -136,6 +143,7 @@ func newModel(
 		modelName:     modelName,
 		version:       version,
 		mcpStatus:     mcpStatus,
+		settings:      settings,
 		onModelSwitch: onModelSwitch,
 		mode:          modeInput,
 		width:         width,
@@ -320,6 +328,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeResume:
 		return m.handleResumeKey(msg)
 
+	case modeConfig:
+		return m.handleConfigKey(msg)
+
 	case modePermission:
 		return m.handlePermissionKey(msg)
 
@@ -397,6 +408,17 @@ func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 		if cmdName == "quit" || cmdName == "exit" {
 			m.quitting = true
 			return m, tea.Quit
+		}
+
+		if cmdName == "config" || cmdName == "settings" {
+			if m.settings != nil {
+				m.configPanel = newConfigPanel(m.settings)
+				m.mode = modeConfig
+				m.textInput.Blur()
+			} else {
+				cmds = append(cmds, tea.Println(errorStyle.Render("No settings loaded.")))
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 		if cmdName == "login" {
@@ -852,7 +874,16 @@ func (m model) View() string {
 		b.WriteString(" Thinking...\n")
 	}
 
-	// 3. Permission prompt.
+	// 3. Config panel.
+	if m.mode == modeConfig && m.configPanel != nil {
+		b.WriteString(m.renderConfigPanel())
+		b.WriteString("\n")
+		// Status bar.
+		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width))
+		return b.String()
+	}
+
+	// 4. Permission prompt.
 	if m.permissionPending != nil {
 		b.WriteString(renderPermissionPrompt(m.permissionPending.ToolName, m.permissionPending.Summary, m.permissionPending.Suggestions))
 		b.WriteString("\n")

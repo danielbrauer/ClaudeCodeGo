@@ -10,6 +10,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -21,6 +22,17 @@ type Settings struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Hooks       json.RawMessage   `json:"hooks,omitempty"` // parsed later in Phase 7
 	Sandbox     json.RawMessage   `json:"sandbox,omitempty"`
+
+	// User-facing preferences (displayed in the config panel).
+	AutoCompactEnabled  *bool  `json:"autoCompactEnabled,omitempty"`
+	Verbose             *bool  `json:"verbose,omitempty"`
+	ThinkingEnabled     *bool  `json:"thinkingEnabled,omitempty"`
+	EditorMode          string `json:"editorMode,omitempty"`   // "normal" or "vim"
+	DiffTool            string `json:"diffTool,omitempty"`     // "terminal" or "auto"
+	NotifChannel        string `json:"notifChannel,omitempty"` // "auto", "terminal_bell", "iterm2", etc.
+	Theme               string `json:"theme,omitempty"`
+	RespectGitignore    *bool  `json:"respectGitignore,omitempty"`
+	FastMode            *bool  `json:"fastMode,omitempty"`
 }
 
 // PermissionRule defines a tool permission rule.
@@ -50,6 +62,17 @@ type rawSettings struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Hooks       json.RawMessage   `json:"hooks,omitempty"`
 	Sandbox     json.RawMessage   `json:"sandbox,omitempty"`
+
+	// User-facing preferences.
+	AutoCompactEnabled *bool  `json:"autoCompactEnabled,omitempty"`
+	Verbose            *bool  `json:"verbose,omitempty"`
+	ThinkingEnabled    *bool  `json:"thinkingEnabled,omitempty"`
+	EditorMode         string `json:"editorMode,omitempty"`
+	DiffTool           string `json:"diffTool,omitempty"`
+	NotifChannel       string `json:"notifChannel,omitempty"`
+	Theme              string `json:"theme,omitempty"`
+	RespectGitignore   *bool  `json:"respectGitignore,omitempty"`
+	FastMode           *bool  `json:"fastMode,omitempty"`
 }
 
 // LoadSettings loads and merges settings from all five levels.
@@ -106,10 +129,19 @@ func loadSettingsFile(path string) (*Settings, error) {
 	}
 
 	s := &Settings{
-		Model:   raw.Model,
-		Env:     raw.Env,
-		Hooks:   raw.Hooks,
-		Sandbox: raw.Sandbox,
+		Model:              raw.Model,
+		Env:                raw.Env,
+		Hooks:              raw.Hooks,
+		Sandbox:            raw.Sandbox,
+		AutoCompactEnabled: raw.AutoCompactEnabled,
+		Verbose:            raw.Verbose,
+		ThinkingEnabled:    raw.ThinkingEnabled,
+		EditorMode:         raw.EditorMode,
+		DiffTool:           raw.DiffTool,
+		NotifChannel:       raw.NotifChannel,
+		Theme:              raw.Theme,
+		RespectGitignore:   raw.RespectGitignore,
+		FastMode:           raw.FastMode,
 	}
 
 	// Parse permissions: try JS format first, then Go format.
@@ -346,5 +378,106 @@ func mergeSettings(base, overlay *Settings) *Settings {
 		result.Sandbox = overlay.Sandbox
 	}
 
+	// User-facing preferences: overlay wins if set.
+	result.AutoCompactEnabled = base.AutoCompactEnabled
+	if overlay.AutoCompactEnabled != nil {
+		result.AutoCompactEnabled = overlay.AutoCompactEnabled
+	}
+	result.Verbose = base.Verbose
+	if overlay.Verbose != nil {
+		result.Verbose = overlay.Verbose
+	}
+	result.ThinkingEnabled = base.ThinkingEnabled
+	if overlay.ThinkingEnabled != nil {
+		result.ThinkingEnabled = overlay.ThinkingEnabled
+	}
+	result.EditorMode = base.EditorMode
+	if overlay.EditorMode != "" {
+		result.EditorMode = overlay.EditorMode
+	}
+	result.DiffTool = base.DiffTool
+	if overlay.DiffTool != "" {
+		result.DiffTool = overlay.DiffTool
+	}
+	result.NotifChannel = base.NotifChannel
+	if overlay.NotifChannel != "" {
+		result.NotifChannel = overlay.NotifChannel
+	}
+	result.Theme = base.Theme
+	if overlay.Theme != "" {
+		result.Theme = overlay.Theme
+	}
+	result.RespectGitignore = base.RespectGitignore
+	if overlay.RespectGitignore != nil {
+		result.RespectGitignore = overlay.RespectGitignore
+	}
+	result.FastMode = base.FastMode
+	if overlay.FastMode != nil {
+		result.FastMode = overlay.FastMode
+	}
+
 	return result
+}
+
+// UserSettingsPath returns the path to the user-level settings file (~/.claude/settings.json).
+func UserSettingsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude", "settings.json"), nil
+}
+
+// SaveUserSetting saves a single key/value pair to the user-level settings file.
+// It reads the existing file, deep-merges the new value, and writes back.
+func SaveUserSetting(key string, value interface{}) error {
+	path, err := UserSettingsPath()
+	if err != nil {
+		return err
+	}
+
+	// Read existing settings as raw map.
+	var settings map[string]interface{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			settings = make(map[string]interface{})
+			if mkErr := os.MkdirAll(filepath.Dir(path), 0755); mkErr != nil {
+				return fmt.Errorf("creating settings directory: %w", mkErr)
+			}
+		} else {
+			return fmt.Errorf("reading settings: %w", err)
+		}
+	} else {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			// If the file is corrupt, start fresh rather than fail.
+			settings = make(map[string]interface{})
+		}
+	}
+
+	settings[key] = value
+
+	output, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling settings: %w", err)
+	}
+	output = append(output, '\n')
+
+	if err := os.WriteFile(path, output, 0644); err != nil {
+		return fmt.Errorf("writing settings: %w", err)
+	}
+	return nil
+}
+
+// BoolVal returns the value of a *bool pointer, or the default if nil.
+func BoolVal(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// BoolPtr returns a pointer to a bool value.
+func BoolPtr(v bool) *bool {
+	return &v
 }

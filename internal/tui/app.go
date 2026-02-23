@@ -39,6 +39,7 @@ type AppConfig struct {
 	MCPManager    MCPStatus                          // *mcp.Manager; nil if no MCP servers configured
 	Skills        []skills.Skill                     // Phase 7: loaded skills for slash command registration
 	Hooks         conversation.HookRunner            // Phase 7: hook runner for SessionStart, etc.
+	Settings      *config.Settings                   // live settings for config panel
 	RuleHandler   *config.RuleBasedPermissionHandler // Rule-based permission handler from main; may be nil
 	OnModelSwitch func(newModel string)              // called when user switches model via /model
 	LogoutFunc    func() error                       // Called when the user types /logout to clear credentials.
@@ -97,6 +98,7 @@ func (a *App) Run(ctx context.Context) error {
 		a.cfg.Skills,
 		a.cfg.SessStore,
 		a.cfg.Session,
+		a.cfg.Settings,
 		a.cfg.OnModelSwitch,
 		a.cfg.LogoutFunc,
 	)
