@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -346,6 +347,135 @@ func TestClient_AllHeaders(t *testing.T) {
 		if got != want {
 			t.Errorf("header %q: got %q, want %q", key, got, want)
 		}
+	}
+}
+
+// ===========================================================================
+// IsOpus46Model
+// ===========================================================================
+
+func TestIsOpus46Model(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-6-20250514", true},
+		{"claude-opus-4-6-20260101", true},
+		{"CLAUDE-OPUS-4-6-20250514", true},  // case insensitive
+		{"claude-opus-4-20250514", false},    // Opus 4, not 4.6
+		{"claude-sonnet-4-20250514", false},
+		{"claude-3-5-haiku-20241022", false},
+		{"opus", false},                      // alias, not full ID
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := IsOpus46Model(tt.model)
+			if got != tt.want {
+				t.Errorf("IsOpus46Model(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+// ===========================================================================
+// SetModel
+// ===========================================================================
+
+func TestClient_SetModel(t *testing.T) {
+	client := NewClient(&staticTokenSource{token: "t"})
+	if client.Model() != ModelClaude46Sonnet {
+		t.Fatalf("default model = %q", client.Model())
+	}
+	client.SetModel(ModelClaude46Opus)
+	if client.Model() != ModelClaude46Opus {
+		t.Errorf("after SetModel: got %q, want %q", client.Model(), ModelClaude46Opus)
+	}
+}
+
+// ===========================================================================
+// Speed field serialization
+// ===========================================================================
+
+func TestSpeedFieldSerialization(t *testing.T) {
+	// speed:"fast" should appear in JSON.
+	req := &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Speed:    "fast",
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"speed":"fast"`) {
+		t.Errorf("JSON should contain speed:fast, got: %s", data)
+	}
+
+	// Empty speed should be omitted.
+	req2 := &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+	}
+	data2, _ := json.Marshal(req2)
+	if strings.Contains(string(data2), "speed") {
+		t.Errorf("JSON should omit empty speed, got: %s", data2)
+	}
+}
+
+// ===========================================================================
+// Fast mode beta header
+// ===========================================================================
+
+func TestClient_FastModeBetaHeader(t *testing.T) {
+	var capturedBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("Anthropic-Beta")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		&staticTokenSource{token: "tok"},
+		WithBaseURL(server.URL),
+	)
+
+	// Request with speed:"fast" should include the fast mode beta.
+	client.CreateMessageStream(context.Background(), &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+		Speed:    "fast",
+	}, &testHandler{})
+
+	if !strings.Contains(capturedBeta, FastModeBeta) {
+		t.Errorf("beta header should contain %q, got %q", FastModeBeta, capturedBeta)
+	}
+	// Should still contain the base betas.
+	if !strings.Contains(capturedBeta, "claude-code-20250219") {
+		t.Errorf("beta header should contain claude-code-20250219, got %q", capturedBeta)
+	}
+}
+
+func TestClient_NoFastModeBetaWithoutSpeed(t *testing.T) {
+	var capturedBeta string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("Anthropic-Beta")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"m\",\"stop_reason\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(
+		&staticTokenSource{token: "tok"},
+		WithBaseURL(server.URL),
+	)
+
+	// Request without speed should NOT include the fast mode beta.
+	client.CreateMessageStream(context.Background(), &CreateMessageRequest{
+		Messages: []Message{NewTextMessage(RoleUser, "hi")},
+	}, &testHandler{})
+
+	if strings.Contains(capturedBeta, FastModeBeta) {
+		t.Errorf("beta header should NOT contain %q without speed:fast, got %q", FastModeBeta, capturedBeta)
 	}
 }
 

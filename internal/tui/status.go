@@ -29,13 +29,18 @@ func (t *tokenTracker) addOutput(outputTokens int) {
 }
 
 // renderStatusBar returns the formatted status bar string.
-func renderStatusBar(model string, tracker *tokenTracker, width int) string {
+func renderStatusBar(model string, tracker *tokenTracker, width int, fastMode bool) string {
 	modelStr := statusModelStyle.Render(model)
 	tokensStr := fmt.Sprintf("%s in / %s out",
 		formatTokenCount(tracker.TotalInputTokens),
 		formatTokenCount(tracker.TotalOutputTokens))
 
-	return statusBarStyle.Render(modelStr + "  " + tokensStr)
+	parts := modelStr + "  " + tokensStr
+	if fastMode {
+		parts += "  " + fastModeStyle.Render("⚡ Fast")
+	}
+
+	return statusBarStyle.Render(parts)
 }
 
 // renderCostSummary returns a detailed cost breakdown for the /cost command.

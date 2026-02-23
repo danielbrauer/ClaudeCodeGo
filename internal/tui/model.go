@@ -42,7 +42,8 @@ type model struct {
 	cancelFn  context.CancelFunc
 	modelName string
 	version   string
-	mcpStatus MCPStatus // MCP manager for /mcp command; may be nil
+	mcpStatus MCPStatus   // MCP manager for /mcp command; may be nil
+	apiClient *api.Client // API client for model switching
 
 	// UI state.
 	mode          uiMode
@@ -100,6 +101,9 @@ type model struct {
 	configPanel *configPanel
 	settings    *config.Settings // reference to live settings
 
+	// Fast mode toggle.
+	fastMode bool
+
 	// Initial prompt to send on start.
 	initialPrompt string
 
@@ -125,6 +129,7 @@ func newModel(
 	settings *config.Settings,
 	onModelSwitch func(newModel string),
 	logoutFunc func() error,
+	fastMode bool,
 ) model {
 	ti := newTextInput(width)
 	sp := newSpinner()
@@ -156,6 +161,7 @@ func newModel(
 		initialPrompt: initialPrompt,
 		sessStore:     sessStore,
 		session:       sess,
+		fastMode:      fastMode,
 	}
 }
 
@@ -879,7 +885,7 @@ func (m model) View() string {
 		b.WriteString(m.renderConfigPanel())
 		b.WriteString("\n")
 		// Status bar.
-		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width))
+		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
 		return b.String()
 	}
 
@@ -919,7 +925,7 @@ func (m model) View() string {
 	}
 
 	// 8. Status bar.
-	b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width))
+	b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
 
 	return b.String()
 }

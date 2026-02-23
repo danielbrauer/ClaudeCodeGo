@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/anthropics/claude-code-go/internal/api"
+	"github.com/anthropics/claude-code-go/internal/config"
 	"github.com/anthropics/claude-code-go/internal/skills"
 )
 
@@ -167,6 +169,32 @@ func newSlashRegistry() *slashRegistry {
 		Name:        "review",
 		Description: "Review a pull request",
 		Execute:     nil, // handled specially in handleSubmit (sends prompt to loop)
+	})
+
+	r.register(SlashCommand{
+		Name:        "fast",
+		Description: "Toggle fast mode (" + api.FastModeDisplayName + " only)",
+		Execute: func(m *model) string {
+			m.fastMode = !m.fastMode
+			m.loop.SetFastMode(m.fastMode)
+
+			if m.fastMode {
+				// If current model isn't eligible for fast mode, switch to Opus.
+				if !api.IsOpus46Model(m.modelName) {
+					resolved := api.ModelAliases[api.FastModeModelAlias]
+					m.modelName = resolved
+					m.loop.SetModel(resolved)
+				}
+			}
+
+			// Persist to user settings.
+			_ = config.SaveUserSetting("fastMode", m.fastMode)
+
+			if m.fastMode {
+				return "Fast mode ON"
+			}
+			return "Fast mode OFF"
+		},
 	})
 
 	r.register(SlashCommand{

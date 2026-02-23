@@ -44,6 +44,7 @@ type Loop struct {
 	compactor      *Compactor
 	onTurnComplete func(history *History)
 	hooks          HookRunner // Phase 7: nil = no hooks
+	fastMode       bool       // when true, sends speed:"fast" on eligible models
 }
 
 // LoopConfig configures the agentic loop.
@@ -92,6 +93,16 @@ func (l *Loop) SetHandler(h api.StreamHandler) {
 // SetModel changes the model used for subsequent API calls.
 func (l *Loop) SetModel(model string) {
 	l.client.SetModel(model)
+}
+
+// FastMode returns whether fast mode is enabled.
+func (l *Loop) FastMode() bool {
+	return l.fastMode
+}
+
+// SetFastMode enables or disables fast mode.
+func (l *Loop) SetFastMode(on bool) {
+	l.fastMode = on
 }
 
 // SetPermissionHandler replaces the permission handler on the tool executor.
@@ -148,6 +159,11 @@ func (l *Loop) run(ctx context.Context) error {
 			Messages: l.history.Messages(),
 			System:   l.system,
 			Tools:    l.tools,
+		}
+
+		// Apply fast mode: add speed:"fast" when enabled on an eligible model.
+		if l.fastMode && api.IsOpus46Model(l.client.Model()) {
+			req.Speed = "fast"
 		}
 
 		resp, err := l.client.CreateMessageStream(ctx, req, l.handler)
