@@ -116,6 +116,13 @@ type model struct {
 	// Initial prompt to send on start.
 	initialPrompt string
 
+	// Input section.
+	promptSuggestion string // cached suggestion text (e.g., `Try "edit app.go to..."`)
+	submitCount      int    // number of user messages sent in the session
+
+	// Status line (custom command-based status bar).
+	statusLineText string // last output from the status line command
+
 	// Whether we should quit.
 	quitting bool
 
@@ -151,26 +158,27 @@ func newModel(
 	}
 
 	return model{
-		loop:          loop,
-		ctx:           ctx,
-		cancelFn:      cancelFn,
-		modelName:     modelName,
-		version:       version,
-		mcpStatus:     mcpStatus,
-		settings:      settings,
-		onModelSwitch: onModelSwitch,
-		mode:          modeInput,
-		width:         width,
-		height:        24,
-		textInput:     ti,
-		spinner:       sp,
-		mdRenderer:    md,
-		slashReg:      slash,
-		logoutFunc:    logoutFunc,
-		initialPrompt: initialPrompt,
-		sessStore:     sessStore,
-		session:       sess,
-		fastMode:      fastMode,
+		loop:             loop,
+		ctx:              ctx,
+		cancelFn:         cancelFn,
+		modelName:        modelName,
+		version:          version,
+		mcpStatus:        mcpStatus,
+		settings:         settings,
+		onModelSwitch:    onModelSwitch,
+		mode:             modeInput,
+		width:            width,
+		height:           24,
+		textInput:        ti,
+		spinner:          sp,
+		mdRenderer:       md,
+		slashReg:         slash,
+		logoutFunc:       logoutFunc,
+		initialPrompt:    initialPrompt,
+		sessStore:        sessStore,
+		session:          sess,
+		fastMode:         fastMode,
+		promptSuggestion: generatePromptSuggestion(),
 	}
 }
 
@@ -200,6 +208,10 @@ func (m model) Init() tea.Cmd {
 		cmds = append(cmds, func() tea.Msg {
 			return SubmitInputMsg{Text: m.initialPrompt}
 		})
+	}
+	// Kick off the initial status line refresh.
+	if cmd := m.refreshStatusLine(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	return tea.Batch(cmds...)
 }
@@ -292,6 +304,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeInput
 		m.activeTool = ""
 		m.textInput.Focus()
+		// Refresh the custom status line after each assistant turn.
+		if cmd := m.refreshStatusLine(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		return m, tea.Batch(append(cmds, textarea.Blink)...)
 
 	// ── Memory edit done ──
@@ -310,6 +326,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case PermissionRequestMsg:
 		m.permissionPending = &msg
 		m.mode = modePermission
+		return m, nil
+
+	// ── Status line update ──
+	case statusLineUpdateMsg:
+		m.statusLineText = msg.Text
 		return m, nil
 
 	// ── Todo list update ──
@@ -450,6 +471,8 @@ func isExitCommand(text string) bool {
 // handleSubmit processes submitted text (user message or slash command).
 func (m model) handleSubmit(text string) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	m.submitCount++
 
 	// Echo user input to scrollback.
 	userLine := userLabelStyle.Render("> ") + text
@@ -1070,14 +1093,41 @@ func (m model) View() string {
 		b.WriteString(m.renderCompletions())
 	}
 
-	// 8. Input area.
+	// 8. Input area with borders.
 	if m.mode == modeInput {
+		// Top border.
+		b.WriteString(renderInputBorder(m.width))
+		b.WriteString("\n")
+
+		// Set placeholder dynamically: show suggestion only when the
+		// conversation is empty and the input field is blank.
+		if m.submitCount < 1 && m.textInput.Value() == "" {
+			m.textInput.Placeholder = m.promptSuggestion
+		} else {
+			m.textInput.Placeholder = ""
+		}
+
 		b.WriteString(m.textInput.View())
 		b.WriteString("\n")
+
+		// Bottom border.
+		b.WriteString(renderInputBorder(m.width))
+		b.WriteString("\n")
+
+		// Hints line: "? for shortcuts" (dimmed), shown when no completions
+		// are visible and no other state overrides it.
+		if len(m.completions) == 0 {
+			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
+			b.WriteString("\n")
+		}
 	}
 
-	// 9. Status bar.
-	b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
+	// 9. Status line (custom command output) or default status bar.
+	if m.statusLineText != "" {
+		b.WriteString(statusBarStyle.Render(m.statusLineText))
+	} else {
+		b.WriteString(renderStatusBar(m.modelName, &m.tokens, m.width, m.fastMode))
+	}
 
 	return b.String()
 }

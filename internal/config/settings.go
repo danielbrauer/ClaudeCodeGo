@@ -15,6 +15,14 @@ import (
 	"path/filepath"
 )
 
+// StatusLineConfig defines a custom status line command.
+// The command is run as a shell command; JSON session data is piped to stdin.
+type StatusLineConfig struct {
+	Type    string `json:"type"`              // must be "command"
+	Command string `json:"command"`           // shell command or script path
+	Padding int    `json:"padding,omitempty"` // extra horizontal padding (chars)
+}
+
 // Settings holds merged configuration from all levels.
 type Settings struct {
 	Permissions []PermissionRule  `json:"permissions,omitempty"`
@@ -33,6 +41,9 @@ type Settings struct {
 	Theme               string `json:"theme,omitempty"`
 	RespectGitignore    *bool  `json:"respectGitignore,omitempty"`
 	FastMode            *bool  `json:"fastMode,omitempty"`
+
+	// Custom status line.
+	StatusLine *StatusLineConfig `json:"statusLine,omitempty"`
 }
 
 // PermissionRule defines a tool permission rule.
@@ -73,6 +84,9 @@ type rawSettings struct {
 	Theme              string `json:"theme,omitempty"`
 	RespectGitignore   *bool  `json:"respectGitignore,omitempty"`
 	FastMode           *bool  `json:"fastMode,omitempty"`
+
+	// Custom status line.
+	StatusLine *StatusLineConfig `json:"statusLine,omitempty"`
 }
 
 // LoadSettings loads and merges settings from all five levels.
@@ -142,6 +156,7 @@ func loadSettingsFile(path string) (*Settings, error) {
 		Theme:              raw.Theme,
 		RespectGitignore:   raw.RespectGitignore,
 		FastMode:           raw.FastMode,
+		StatusLine:         raw.StatusLine,
 	}
 
 	// Parse permissions: try JS format first, then Go format.
@@ -414,6 +429,11 @@ func mergeSettings(base, overlay *Settings) *Settings {
 	result.FastMode = base.FastMode
 	if overlay.FastMode != nil {
 		result.FastMode = overlay.FastMode
+	}
+
+	result.StatusLine = base.StatusLine
+	if overlay.StatusLine != nil {
+		result.StatusLine = overlay.StatusLine
 	}
 
 	return result
