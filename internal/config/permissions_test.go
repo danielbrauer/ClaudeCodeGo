@@ -924,7 +924,7 @@ func TestParseJSPermissions(t *testing.T) {
 		"deny": ["Bash(rm *)"],
 		"ask": ["WebFetch(domain:unknown.com)"]
 	}`)
-	rules, err := parseJSPermissions(data)
+	rules, _, err := parseJSPermissions(data)
 	if err != nil {
 		t.Fatalf("parseJSPermissions: %v", err)
 	}
@@ -955,7 +955,7 @@ func TestParseJSPermissions(t *testing.T) {
 func TestParsePermissionsBothFormats(t *testing.T) {
 	// JS format.
 	jsData := json.RawMessage(`{"allow": ["Bash(npm:*)"]}`)
-	rules, err := parsePermissions(jsData)
+	rules, _, err := parsePermissions(jsData)
 	if err != nil {
 		t.Fatalf("JS format: %v", err)
 	}
@@ -965,11 +965,83 @@ func TestParsePermissionsBothFormats(t *testing.T) {
 
 	// Go format.
 	goData := json.RawMessage(`[{"tool": "Bash", "pattern": "npm:*", "action": "allow"}]`)
-	rules2, err := parsePermissions(goData)
+	rules2, _, err := parsePermissions(goData)
 	if err != nil {
 		t.Fatalf("Go format: %v", err)
 	}
 	if len(rules2) != 1 || rules2[0].Tool != "Bash" || rules2[0].Pattern != "npm:*" {
 		t.Errorf("Go format: unexpected rules: %+v", rules2)
+	}
+}
+
+func TestParseJSPermissionsDefaultMode(t *testing.T) {
+	data := json.RawMessage(`{
+		"allow": ["Bash(npm:*)"],
+		"defaultMode": "plan"
+	}`)
+	rules, mode, err := parseJSPermissions(data)
+	if err != nil {
+		t.Fatalf("parseJSPermissions: %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(rules))
+	}
+	if mode != "plan" {
+		t.Errorf("defaultMode = %q, want %q", mode, "plan")
+	}
+}
+
+func TestValidatePermissionMode(t *testing.T) {
+	tests := []struct {
+		input string
+		want  PermissionMode
+	}{
+		{"default", ModeDefault},
+		{"plan", ModePlan},
+		{"acceptEdits", ModeAcceptEdits},
+		{"bypassPermissions", ModeBypassPermissions},
+		{"dontAsk", ModeDontAsk},
+		{"invalid", ModeDefault},
+		{"", ModeDefault},
+	}
+
+	for _, tt := range tests {
+		got := ValidatePermissionMode(tt.input)
+		if got != tt.want {
+			t.Errorf("ValidatePermissionMode(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCyclePermissionMode(t *testing.T) {
+	tests := []struct {
+		current       PermissionMode
+		bypassEnabled bool
+		want          PermissionMode
+	}{
+		{ModeDefault, false, ModeAcceptEdits},
+		{ModeAcceptEdits, false, ModePlan},
+		{ModePlan, false, ModeDefault},
+		{ModeBypassPermissions, false, ModeDefault},
+		{ModeDontAsk, false, ModeDefault},
+	}
+
+	for _, tt := range tests {
+		got := CyclePermissionMode(tt.current, tt.bypassEnabled)
+		if got != tt.want {
+			t.Errorf("CyclePermissionMode(%q, %v) = %q, want %q", tt.current, tt.bypassEnabled, got, tt.want)
+		}
+	}
+}
+
+func TestIsPermissionModeDisabled(t *testing.T) {
+	if IsPermissionModeDisabled(ModeBypassPermissions, "disable") != true {
+		t.Error("bypassPermissions should be disabled when policy is 'disable'")
+	}
+	if IsPermissionModeDisabled(ModeBypassPermissions, "") != false {
+		t.Error("bypassPermissions should be enabled when no policy")
+	}
+	if IsPermissionModeDisabled(ModePlan, "disable") != false {
+		t.Error("plan mode should not be disabled by bypass policy")
 	}
 }

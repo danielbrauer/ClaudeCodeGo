@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/anthropics/claude-code-go/internal/config"
 )
 
 // handleKey processes keyboard input based on the current mode.
@@ -66,7 +68,18 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTabComplete()
 
 	case tea.KeyShiftTab:
-		return m.handleTabCompletePrev()
+		// When completions are active, cycle backward through them.
+		if len(m.completions) > 0 {
+			return m.handleTabCompletePrev()
+		}
+		// Otherwise, cycle permission mode (matches JS Shift+Tab behavior).
+		newMode := m.cyclePermissionMode()
+		info := config.PermissionModeMetadata[newMode]
+		modeLabel := info.Title
+		if info.Symbol != "" {
+			modeLabel = info.Symbol + " " + modeLabel
+		}
+		return m, tea.Println(permHintStyle.Render("Permission mode: " + modeLabel))
 
 	case tea.KeyEscape:
 		if len(m.completions) > 0 {

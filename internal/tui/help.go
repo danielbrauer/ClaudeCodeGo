@@ -371,7 +371,7 @@ func helpInputPrefixes() []shortcutEntry {
 func helpInputModifiers() []shortcutEntry {
 	return []shortcutEntry{
 		{Key: "double tap esc", Description: "to clear input"},
-		{Key: "shift+tab", Description: "to auto-accept edits"},
+		{Key: "shift+tab", Description: "to cycle permission mode"},
 		{Key: "ctrl+o", Description: "for verbose output"},
 		{Key: "ctrl+t", Description: "to toggle tasks"},
 	}

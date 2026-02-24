@@ -139,4 +139,17 @@ var (
 
 	queuedBadgeStyle = lipgloss.NewStyle().
 				Foreground(colorYellow)
+
+	// Permission mode indicators in the status bar.
+	permModeErrorStyle = lipgloss.NewStyle().
+				Foreground(colorRed).
+				Bold(true)
+
+	permModePlanStyle = lipgloss.NewStyle().
+				Foreground(colorYellow).
+				Bold(true)
+
+	permModeAutoAcceptStyle = lipgloss.NewStyle().
+				Foreground(colorGreen).
+				Bold(true)
 )

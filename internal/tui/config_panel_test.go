@@ -196,15 +196,22 @@ func TestConfigPanel_ToggleOrCycle(t *testing.T) {
 	s := &config.Settings{}
 	cp := newConfigPanel(s)
 
-	// cursor is at 0 which is "autoCompactEnabled" (bool).
+	// cursor at 0 is "defaultPermissionMode" (enum); cycle it.
 	cp.cursor = 0
+	cp.toggleOrCycle()
+	if s.DefaultPermissionMode != "plan" {
+		t.Errorf("toggleOrCycle on permission mode: DefaultPermissionMode = %q, want %q", s.DefaultPermissionMode, "plan")
+	}
+
+	// cursor at 1 is "autoCompactEnabled" (bool); toggle it.
+	cp.cursor = 1
 	cp.toggleOrCycle()
 	if s.AutoCompactEnabled == nil || *s.AutoCompactEnabled != false {
 		t.Errorf("toggleOrCycle on bool: AutoCompactEnabled = %v, want false", s.AutoCompactEnabled)
 	}
 
-	// Move cursor to editorMode (index 5 = "Editor mode" enum).
-	cp.cursor = 5
+	// Move cursor to editorMode (index 6 = "Editor mode" enum).
+	cp.cursor = 6
 	cp.toggleOrCycle()
 	if s.EditorMode != "vim" {
 		t.Errorf("toggleOrCycle on enum: EditorMode = %q, want %q", s.EditorMode, "vim")
@@ -224,18 +231,24 @@ func TestConfigPanel_ApplyFilter(t *testing.T) {
 	s := &config.Settings{}
 	cp := newConfigPanel(s)
 
-	// Search for "mode" should match "Thinking mode", "Fast mode", "Editor mode".
+	// Search for "mode" should match "Permission mode", "Thinking mode", "Fast mode", "Editor mode".
 	cp.searchQuery = "mode"
 	cp.applyFilter()
 
-	if len(cp.filtered) != 3 {
-		t.Errorf("filtered for 'mode': len = %d, want 3", len(cp.filtered))
+	if len(cp.filtered) != 4 {
+		t.Errorf("filtered for 'mode': len = %d, want 4", len(cp.filtered))
 	}
 
 	// Verify filtered items are the right ones.
+	validIDs := map[string]bool{
+		"defaultPermissionMode": true,
+		"thinkingEnabled":       true,
+		"fastMode":              true,
+		"editorMode":            true,
+	}
 	for _, idx := range cp.filtered {
 		item := cp.items[idx]
-		if item.id != "thinkingEnabled" && item.id != "fastMode" && item.id != "editorMode" {
+		if !validIDs[item.id] {
 			t.Errorf("unexpected filtered item: %q", item.id)
 		}
 	}

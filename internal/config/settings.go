@@ -44,6 +44,12 @@ type Settings struct {
 
 	// Custom status line.
 	StatusLine *StatusLineConfig `json:"statusLine,omitempty"`
+
+	// Permission mode settings.
+	DefaultPermissionMode string `json:"defaultPermissionMode,omitempty"` // default, plan, acceptEdits, bypassPermissions, dontAsk
+
+	// Policy: when set to "disable", bypassPermissions mode cannot be used.
+	DisableBypassPermissions string `json:"disableBypassPermissions,omitempty"`
 }
 
 // PermissionRule defines a tool permission rule.
@@ -87,6 +93,10 @@ type rawSettings struct {
 
 	// Custom status line.
 	StatusLine *StatusLineConfig `json:"statusLine,omitempty"`
+
+	// Permission mode settings.
+	DefaultPermissionMode    string `json:"defaultPermissionMode,omitempty"`
+	DisableBypassPermissions string `json:"disableBypassPermissions,omitempty"`
 }
 
 // LoadSettings loads and merges settings from all five levels.
@@ -143,29 +153,36 @@ func loadSettingsFile(path string) (*Settings, error) {
 	}
 
 	s := &Settings{
-		Model:              raw.Model,
-		Env:                raw.Env,
-		Hooks:              raw.Hooks,
-		Sandbox:            raw.Sandbox,
-		AutoCompactEnabled: raw.AutoCompactEnabled,
-		Verbose:            raw.Verbose,
-		ThinkingEnabled:    raw.ThinkingEnabled,
-		EditorMode:         raw.EditorMode,
-		DiffTool:           raw.DiffTool,
-		NotifChannel:       raw.NotifChannel,
-		Theme:              raw.Theme,
-		RespectGitignore:   raw.RespectGitignore,
-		FastMode:           raw.FastMode,
-		StatusLine:         raw.StatusLine,
+		Model:                    raw.Model,
+		Env:                      raw.Env,
+		Hooks:                    raw.Hooks,
+		Sandbox:                  raw.Sandbox,
+		AutoCompactEnabled:       raw.AutoCompactEnabled,
+		Verbose:                  raw.Verbose,
+		ThinkingEnabled:          raw.ThinkingEnabled,
+		EditorMode:               raw.EditorMode,
+		DiffTool:                 raw.DiffTool,
+		NotifChannel:             raw.NotifChannel,
+		Theme:                    raw.Theme,
+		RespectGitignore:         raw.RespectGitignore,
+		FastMode:                 raw.FastMode,
+		StatusLine:               raw.StatusLine,
+		DefaultPermissionMode:    raw.DefaultPermissionMode,
+		DisableBypassPermissions: raw.DisableBypassPermissions,
 	}
 
 	// Parse permissions: try JS format first, then Go format.
 	if raw.Permissions != nil {
-		rules, err := parsePermissions(raw.Permissions)
+		rules, defaultMode, err := parsePermissions(raw.Permissions)
 		if err != nil {
 			return nil, err
 		}
 		s.Permissions = rules
+		// The JS permissions block can contain a defaultMode field.
+		// It only applies if no top-level defaultPermissionMode is set.
+		if s.DefaultPermissionMode == "" && defaultMode != "" {
+			s.DefaultPermissionMode = defaultMode
+		}
 	}
 
 	return s, nil
@@ -174,15 +191,17 @@ func loadSettingsFile(path string) (*Settings, error) {
 // parsePermissions handles both permission formats:
 //   - JS format: {"allow": ["Bash(npm:*)"], "deny": [...], "ask": [...]}
 //   - Go format: [{"tool": "Bash", "pattern": "npm:*", "action": "allow"}, ...]
-func parsePermissions(data json.RawMessage) ([]PermissionRule, error) {
+//
+// Returns rules, defaultMode (from JS format only), and error.
+func parsePermissions(data json.RawMessage) ([]PermissionRule, string, error) {
 	if len(data) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	// Determine the type by looking at the first non-whitespace byte.
 	trimmed := trimJSONWhitespace(data)
 	if len(trimmed) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	switch trimmed[0] {
@@ -193,21 +212,23 @@ func parsePermissions(data json.RawMessage) ([]PermissionRule, error) {
 		// Go format: [{tool, pattern, action}, ...]
 		var rules []PermissionRule
 		if err := json.Unmarshal(data, &rules); err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return rules, nil
+		return rules, "", nil
 	default:
-		return nil, nil
+		return nil, "", nil
 	}
 }
 
 // parseJSPermissions parses the JS-format permissions block into our internal
 // PermissionRule slice. Rule strings like "Bash(npm:*)" are parsed into
 // {Tool: "Bash", Pattern: "npm:*", Action: "allow"}.
-func parseJSPermissions(data json.RawMessage) ([]PermissionRule, error) {
+//
+// Also extracts the defaultMode field if present.
+func parseJSPermissions(data json.RawMessage) ([]PermissionRule, string, error) {
 	var jp jsPermissions
 	if err := json.Unmarshal(data, &jp); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var rules []PermissionRule
@@ -228,7 +249,7 @@ func parseJSPermissions(data json.RawMessage) ([]PermissionRule, error) {
 		rules = append(rules, rule)
 	}
 
-	return rules, nil
+	return rules, jp.DefaultMode, nil
 }
 
 // ParseRuleString parses a rule string like "Bash(npm:*)" or "Read" into a
@@ -434,6 +455,22 @@ func mergeSettings(base, overlay *Settings) *Settings {
 	result.StatusLine = base.StatusLine
 	if overlay.StatusLine != nil {
 		result.StatusLine = overlay.StatusLine
+	}
+
+	result.DefaultPermissionMode = base.DefaultPermissionMode
+	if overlay.DefaultPermissionMode != "" {
+		result.DefaultPermissionMode = overlay.DefaultPermissionMode
+	}
+
+	// DisableBypassPermissions: once set to "disable" by any level, it sticks.
+	// Higher-priority layers can only disable, not re-enable.
+	if base.DisableBypassPermissions == "disable" || overlay.DisableBypassPermissions == "disable" {
+		result.DisableBypassPermissions = "disable"
+	} else {
+		result.DisableBypassPermissions = overlay.DisableBypassPermissions
+		if result.DisableBypassPermissions == "" {
+			result.DisableBypassPermissions = base.DisableBypassPermissions
+		}
 	}
 
 	return result

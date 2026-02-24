@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"os/user"
 	"strings"
 
 	"golang.org/x/term"
@@ -88,6 +90,7 @@ func main() {
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 	loginFlag := flag.Bool("login", false, "Log in with OAuth")
 	dangerousNoPermissions := flag.Bool("dangerously-skip-permissions", false, "Skip all permission prompts (use with caution)")
+	permissionModeFlag := flag.String("permission-mode", "", "Set session permission mode: default, plan, acceptEdits, bypassPermissions")
 	outputFormat := flag.String("output-format", "text", "Output format: text, json, stream-json")
 	flag.Parse()
 
@@ -188,19 +191,53 @@ func main() {
 	// Build system prompt with settings context and skill content.
 	system := conversation.BuildSystemPrompt(cwd, settings, skillContent)
 
+	// Determine the initial permission mode.
+	// Priority: --dangerously-skip-permissions > --permission-mode > settings > default.
+	initialPermMode := config.ModeDefault
+	if settings.DefaultPermissionMode != "" {
+		initialPermMode = config.ValidatePermissionMode(settings.DefaultPermissionMode)
+	}
+	if *permissionModeFlag != "" {
+		initialPermMode = config.ValidatePermissionMode(*permissionModeFlag)
+	}
+	if *dangerousNoPermissions {
+		initialPermMode = config.ModeBypassPermissions
+	}
+
+	// Enforce bypass-permissions restrictions.
+	if initialPermMode == config.ModeBypassPermissions {
+		// Cannot use bypass with root/sudo.
+		if u, err := user.Current(); err == nil && u.Uid == "0" {
+			fmt.Fprintf(os.Stderr, "Error: --dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons.\n")
+			os.Exit(1)
+		}
+
+		// Cannot use bypass if disabled by policy.
+		if config.IsPermissionModeDisabled(config.ModeBypassPermissions, settings.DisableBypassPermissions) {
+			fmt.Fprintf(os.Stderr, "Error: Bypass permissions mode is disabled by settings or configuration.\n")
+			os.Exit(1)
+		}
+
+		// Show warning dialog for bypass mode (interactive only).
+		if !*printMode && term.IsTerminal(int(os.Stdin.Fd())) {
+			if !showBypassPermissionsWarning() {
+				fmt.Println("Bypass permissions mode declined. Exiting.")
+				os.Exit(0)
+			}
+		}
+	}
+
 	// Set up permission handler with rule-based evaluation.
 	var permHandler tools.PermissionHandler
 	var ruleHandler *config.RuleBasedPermissionHandler
-	if *dangerousNoPermissions {
-		permHandler = &tools.AlwaysAllowPermissionHandler{}
-	} else {
-		terminalHandler := tools.NewTerminalPermissionHandler()
-		ruleHandler = config.NewRuleBasedPermissionHandler(
-			settings.Permissions,
-			terminalHandler,
-		)
-		permHandler = ruleHandler
-	}
+	terminalHandler := tools.NewTerminalPermissionHandler()
+	ruleHandler = config.NewRuleBasedPermissionHandler(
+		settings.Permissions,
+		terminalHandler,
+	)
+	// Set the initial permission mode.
+	ruleHandler.GetPermissionContext().SetMode(initialPermMode)
+	permHandler = ruleHandler
 
 	// Background task store shared by Agent, TaskOutput, and TaskStop tools.
 	bgStore := tools.NewBackgroundTaskStore()
@@ -551,4 +588,31 @@ func doLogin(ctx context.Context, store *auth.CredentialStore, opts auth.LoginOp
 
 func doLogout(store *auth.CredentialStore) error {
 	return store.Delete()
+}
+
+// showBypassPermissionsWarning displays a warning dialog for bypass permissions mode.
+// Returns true if the user accepts, false if they decline.
+func showBypassPermissionsWarning() bool {
+	// Red/bold warning header.
+	fmt.Println()
+	fmt.Println("\033[1;31mWARNING: Claude Code running in Bypass Permissions mode\033[0m")
+	fmt.Println()
+	fmt.Println("In Bypass Permissions mode, Claude Code will not ask for your")
+	fmt.Println("approval before running potentially dangerous commands.")
+	fmt.Println()
+	fmt.Println("This mode should only be used in a sandboxed container/VM that")
+	fmt.Println("has restricted internet access and can easily be restored if damaged.")
+	fmt.Println()
+	fmt.Println("By proceeding, you accept all responsibility for actions taken while")
+	fmt.Println("running in Bypass Permissions mode.")
+	fmt.Println()
+	fmt.Print("Accept and proceed? [y/N]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	answer := strings.TrimSpace(strings.ToLower(line))
+	return answer == "y" || answer == "yes"
 }

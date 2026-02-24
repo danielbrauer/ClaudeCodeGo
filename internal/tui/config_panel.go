@@ -80,7 +80,14 @@ func snapshotSettings(s *config.Settings) *config.Settings {
 
 // buildItems returns the list of configurable settings.
 func (cp *configPanel) buildItems() []configSetting {
+	// Build permission mode options — exclude bypassPermissions if disabled.
+	permModeOptions := []string{"default", "plan", "acceptEdits"}
+	if cp.settings.DisableBypassPermissions != "disable" {
+		permModeOptions = append(permModeOptions, "bypassPermissions")
+	}
+
 	return []configSetting{
+		{id: "defaultPermissionMode", label: "Permission mode", typ: configEnum, options: permModeOptions},
 		{id: "autoCompactEnabled", label: "Auto-compact", typ: configBool},
 		{id: "thinkingEnabled", label: "Thinking mode", typ: configBool},
 		{id: "fastMode", label: "Fast mode", typ: configBool},
@@ -124,6 +131,11 @@ func (cp *configPanel) applyFilter() {
 func (cp *configPanel) getValue(item configSetting) string {
 	s := cp.settings
 	switch item.id {
+	case "defaultPermissionMode":
+		if s.DefaultPermissionMode == "" {
+			return "default"
+		}
+		return s.DefaultPermissionMode
 	case "autoCompactEnabled":
 		return fmt.Sprintf("%v", config.BoolVal(s.AutoCompactEnabled, true))
 	case "thinkingEnabled":
@@ -210,6 +222,8 @@ func (cp *configPanel) toggleBool(id string, s *config.Settings) {
 func (cp *configPanel) cycleEnum(id string, options []string, s *config.Settings) {
 	var currentPtr *string
 	switch id {
+	case "defaultPermissionMode":
+		currentPtr = &s.DefaultPermissionMode
 	case "editorMode":
 		currentPtr = &s.EditorMode
 	case "diffTool":
@@ -272,6 +286,7 @@ func (cp *configPanel) buildChangeSummary() []string {
 	s := cp.settings
 	i := cp.initial
 
+	checkEnum("permission mode", i.DefaultPermissionMode, s.DefaultPermissionMode, "default")
 	checkBool("auto-compact", i.AutoCompactEnabled, s.AutoCompactEnabled, true)
 	checkBool("thinking mode", i.ThinkingEnabled, s.ThinkingEnabled, false)
 	checkBool("fast mode", i.FastMode, s.FastMode, false)
@@ -483,6 +498,16 @@ func (m model) closeConfigPanel() (tea.Model, tea.Cmd) {
 		newFast := config.BoolVal(m.settings.FastMode, false)
 		if newFast != m.fastMode {
 			applyFastMode(&m, newFast)
+		}
+
+		// Sync permission mode if it changed via the config panel.
+		newPermMode := m.settings.DefaultPermissionMode
+		if newPermMode == "" {
+			newPermMode = "default"
+		}
+		currentPermMode := m.getPermissionMode()
+		if config.PermissionMode(newPermMode) != currentPermMode {
+			m.setPermissionMode(config.ValidatePermissionMode(newPermMode))
 		}
 
 		changes := m.configPanel.buildChangeSummary()
