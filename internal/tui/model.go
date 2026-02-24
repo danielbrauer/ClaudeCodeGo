@@ -212,3 +212,40 @@ func applyFastMode(m *model, enabled bool) {
 		m.loop.SetModel(resolved)
 	}
 }
+
+// getPermissionMode returns the current permission mode from the loop's
+// permission context. Returns ModeDefault if no context is available.
+func (m *model) getPermissionMode() config.PermissionMode {
+	permCtx := m.loop.GetPermissionContext()
+	if permCtx != nil {
+		return permCtx.GetMode()
+	}
+	return config.ModeDefault
+}
+
+// setPermissionMode changes the permission mode on the loop's permission
+// context. Returns false if the mode is disabled by policy.
+func (m *model) setPermissionMode(mode config.PermissionMode) bool {
+	if m.settings != nil {
+		if config.IsPermissionModeDisabled(mode, m.settings.DisableBypassPermissions) {
+			return false
+		}
+	}
+	permCtx := m.loop.GetPermissionContext()
+	if permCtx != nil {
+		permCtx.SetMode(mode)
+	}
+	return true
+}
+
+// cyclePermissionMode advances to the next permission mode.
+func (m *model) cyclePermissionMode() config.PermissionMode {
+	current := m.getPermissionMode()
+	bypassEnabled := true
+	if m.settings != nil && m.settings.DisableBypassPermissions == "disable" {
+		bypassEnabled = false
+	}
+	next := config.CyclePermissionMode(current, bypassEnabled)
+	m.setPermissionMode(next)
+	return next
+}

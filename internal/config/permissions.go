@@ -31,6 +31,93 @@ const (
 	ModeDontAsk           PermissionMode = "dontAsk"
 )
 
+// ValidPermissionModes lists all valid permission mode values.
+var ValidPermissionModes = []PermissionMode{
+	ModeDefault, ModePlan, ModeAcceptEdits, ModeBypassPermissions, ModeDontAsk,
+}
+
+// PermissionModeInfo holds display metadata for a permission mode.
+type PermissionModeInfo struct {
+	Title      string // human-readable title
+	ShortTitle string // short version for status bar
+	Symbol     string // symbol shown next to mode name
+	Color      string // semantic color name: "text", "autoAccept", "planMode", "error"
+}
+
+// PermissionModeMetadata maps each mode to its display info.
+// Matches the JS Rq1 object.
+var PermissionModeMetadata = map[PermissionMode]PermissionModeInfo{
+	ModeDefault: {
+		Title:      "Default",
+		ShortTitle: "Default",
+		Symbol:     "",
+		Color:      "text",
+	},
+	ModePlan: {
+		Title:      "Plan Mode",
+		ShortTitle: "Plan",
+		Symbol:     "\u23F8", // ⏸
+		Color:      "planMode",
+	},
+	ModeAcceptEdits: {
+		Title:      "Auto-accept edits",
+		ShortTitle: "Auto-edit",
+		Symbol:     "\u23F5\u23F5", // ⏵⏵
+		Color:      "autoAccept",
+	},
+	ModeBypassPermissions: {
+		Title:      "Bypass Permissions",
+		ShortTitle: "Bypass",
+		Symbol:     "\u23F5\u23F5", // ⏵⏵
+		Color:      "error",
+	},
+	ModeDontAsk: {
+		Title:      "Don't Ask",
+		ShortTitle: "Don't Ask",
+		Symbol:     "\u23F5\u23F5", // ⏵⏵
+		Color:      "error",
+	},
+}
+
+// ValidatePermissionMode returns mode if valid, or ModeDefault if not.
+func ValidatePermissionMode(mode string) PermissionMode {
+	for _, m := range ValidPermissionModes {
+		if string(m) == mode {
+			return m
+		}
+	}
+	return ModeDefault
+}
+
+// CyclePermissionMode returns the next mode in the cycling order.
+// The standard cycle is: default → acceptEdits → plan → default.
+// If bypass is enabled and the current mode is bypassPermissions, it stays.
+func CyclePermissionMode(current PermissionMode, bypassEnabled bool) PermissionMode {
+	switch current {
+	case ModeDefault:
+		return ModeAcceptEdits
+	case ModeAcceptEdits:
+		return ModePlan
+	case ModePlan:
+		return ModeDefault
+	case ModeBypassPermissions:
+		// If in bypass mode, cycling goes to default.
+		return ModeDefault
+	case ModeDontAsk:
+		return ModeDefault
+	default:
+		return ModeDefault
+	}
+}
+
+// IsPermissionModeDisabled returns true if the given mode is disabled by settings.
+func IsPermissionModeDisabled(mode PermissionMode, disableBypass string) bool {
+	if mode == ModeBypassPermissions && disableBypass == "disable" {
+		return true
+	}
+	return false
+}
+
 // DecisionReasonType describes why a permission decision was made.
 type DecisionReasonType string
 

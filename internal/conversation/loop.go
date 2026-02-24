@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/anthropics/claude-code-go/internal/api"
+	"github.com/anthropics/claude-code-go/internal/config"
 )
 
 // ToolExecutor executes tool calls and returns results.
@@ -114,6 +115,18 @@ func (l *Loop) SetPermissionHandler(h interface{}) {
 	if ps, ok := l.toolExec.(permSetter); ok {
 		ps.SetPermissionHandler(h)
 	}
+}
+
+// GetPermissionContext returns the session-level permission context from the
+// tool executor, if it supports it. Returns nil otherwise.
+func (l *Loop) GetPermissionContext() *config.ToolPermissionContext {
+	type permCtxGetter interface {
+		GetPermissionContext() *config.ToolPermissionContext
+	}
+	if pg, ok := l.toolExec.(permCtxGetter); ok {
+		return pg.GetPermissionContext()
+	}
+	return nil
 }
 
 // SendMessage sends a user message and runs the agentic loop until the
