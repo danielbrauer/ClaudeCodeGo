@@ -20,6 +20,62 @@ func TestSectionIdentity(t *testing.T) {
 	}
 }
 
+func TestSectionSecurityGuardrails(t *testing.T) {
+	ctx := &PromptContext{}
+	text := sectionSecurityGuardrails(ctx)
+	for _, want := range []string{
+		"authorized security testing",
+		"CTF challenges",
+		"DoS attacks",
+		"supply chain compromise",
+		"Dual-use security tools",
+		"pentesting engagements",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("security guardrails should contain %q", want)
+		}
+	}
+}
+
+func TestSectionTaskPhilosophy(t *testing.T) {
+	ctx := &PromptContext{}
+	text := sectionTaskPhilosophy(ctx)
+	if !strings.HasPrefix(text, "# Doing tasks") {
+		t.Error("task philosophy should start with Doing tasks header")
+	}
+	for _, want := range []string{
+		"over-engineering",
+		"security vulnerabilities",
+		"OWASP top 10",
+		"backwards-compatibility hacks",
+		"premature abstraction",
+		"time estimates",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("task philosophy should contain %q", want)
+		}
+	}
+}
+
+func TestSectionActionCare(t *testing.T) {
+	ctx := &PromptContext{}
+	text := sectionActionCare(ctx)
+	if !strings.HasPrefix(text, "# Executing actions with care") {
+		t.Error("action care should start with header")
+	}
+	for _, want := range []string{
+		"reversibility and blast radius",
+		"Destructive operations",
+		"force-pushing",
+		"measure twice, cut once",
+		"CLAUDE.md files",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("action care should contain %q", want)
+		}
+	}
+}
+
 func TestSectionEnvironment(t *testing.T) {
 	ctx := &PromptContext{CWD: "/my/project"}
 	text := sectionEnvironment(ctx)
