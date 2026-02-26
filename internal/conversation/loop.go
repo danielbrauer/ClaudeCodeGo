@@ -333,6 +333,10 @@ func (h *PrintStreamHandler) OnTextDelta(index int, text string) {
 	fmt.Print(text)
 }
 
+func (h *PrintStreamHandler) OnThinkingDelta(index int, thinking string) {}
+
+func (h *PrintStreamHandler) OnSignatureDelta(index int, signature string) {}
+
 func (h *PrintStreamHandler) OnInputJSONDelta(index int, partialJSON string) {}
 
 func (h *PrintStreamHandler) OnContentBlockStop(index int) {}
@@ -371,6 +375,10 @@ func (h *ToolAwareStreamHandler) OnContentBlockStart(index int, block api.Conten
 func (h *ToolAwareStreamHandler) OnTextDelta(index int, text string) {
 	fmt.Print(text)
 }
+
+func (h *ToolAwareStreamHandler) OnThinkingDelta(index int, thinking string) {}
+
+func (h *ToolAwareStreamHandler) OnSignatureDelta(index int, signature string) {}
 
 func (h *ToolAwareStreamHandler) OnInputJSONDelta(index int, partialJSON string) {
 	if h.jsonBufs != nil {

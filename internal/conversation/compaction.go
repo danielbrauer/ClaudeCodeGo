@@ -131,6 +131,8 @@ type noOpStreamHandler struct{}
 func (h *noOpStreamHandler) OnMessageStart(msg api.MessageResponse)                     {}
 func (h *noOpStreamHandler) OnContentBlockStart(index int, block api.ContentBlock)       {}
 func (h *noOpStreamHandler) OnTextDelta(index int, text string)                          {}
+func (h *noOpStreamHandler) OnThinkingDelta(index int, thinking string)                  {}
+func (h *noOpStreamHandler) OnSignatureDelta(index int, signature string)                {}
 func (h *noOpStreamHandler) OnInputJSONDelta(index int, partialJSON string)              {}
 func (h *noOpStreamHandler) OnContentBlockStop(index int)                                {}
 func (h *noOpStreamHandler) OnMessageDelta(delta api.MessageDeltaBody, usage *api.Usage) {}

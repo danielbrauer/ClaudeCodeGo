@@ -151,6 +151,8 @@ type collectingStreamHandler struct {
 func (h *collectingStreamHandler) OnMessageStart(_ api.MessageResponse)                  {}
 func (h *collectingStreamHandler) OnContentBlockStart(_ int, _ api.ContentBlock)         {}
 func (h *collectingStreamHandler) OnTextDelta(_ int, text string)                        { h.texts = append(h.texts, text) }
+func (h *collectingStreamHandler) OnThinkingDelta(_ int, _ string)                       {}
+func (h *collectingStreamHandler) OnSignatureDelta(_ int, _ string)                      {}
 func (h *collectingStreamHandler) OnInputJSONDelta(_ int, _ string)                      {}
 func (h *collectingStreamHandler) OnContentBlockStop(_ int)                              {}
 func (h *collectingStreamHandler) OnMessageDelta(_ api.MessageDeltaBody, _ *api.Usage)   {}

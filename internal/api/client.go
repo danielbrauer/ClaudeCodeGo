@@ -336,6 +336,20 @@ func (a *responseAssembler) OnTextDelta(index int, text string) {
 	a.handler.OnTextDelta(index, text)
 }
 
+func (a *responseAssembler) OnThinkingDelta(index int, thinking string) {
+	if b, ok := a.blocks[index]; ok {
+		b.Thinking += thinking
+	}
+	a.handler.OnThinkingDelta(index, thinking)
+}
+
+func (a *responseAssembler) OnSignatureDelta(index int, signature string) {
+	if b, ok := a.blocks[index]; ok {
+		b.Signature += signature
+	}
+	a.handler.OnSignatureDelta(index, signature)
+}
+
 func (a *responseAssembler) OnInputJSONDelta(index int, partialJSON string) {
 	if buf, ok := a.jsonBuf[index]; ok {
 		buf.WriteString(partialJSON)

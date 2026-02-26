@@ -83,10 +83,12 @@ const (
 
 // Content block type constants.
 const (
-	ContentTypeText      = "text"
-	ContentTypeImage     = "image"
-	ContentTypeToolUse   = "tool_use"
-	ContentTypeToolResult = "tool_result"
+	ContentTypeText             = "text"
+	ContentTypeImage            = "image"
+	ContentTypeToolUse          = "tool_use"
+	ContentTypeToolResult       = "tool_result"
+	ContentTypeThinking         = "thinking"
+	ContentTypeRedactedThinking = "redacted_thinking"
 )
 
 // Stop reason constants.
@@ -163,7 +165,7 @@ func NewBlockMessage(role string, blocks []ContentBlock) Message {
 	return Message{Role: role, Content: content}
 }
 
-// ContentBlock is a union type for text, image, tool_use, and tool_result blocks.
+// ContentBlock is a union type for text, image, tool_use, tool_result, thinking, and redacted_thinking blocks.
 type ContentBlock struct {
 	Type string `json:"type"`
 
@@ -182,6 +184,13 @@ type ContentBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"` // string or []ContentBlock
 	IsError   bool            `json:"is_error,omitempty"`
+
+	// Thinking block fields.
+	Thinking  string `json:"thinking,omitempty"`  // thinking text content
+	Signature string `json:"signature,omitempty"` // thinking block signature
+
+	// Redacted thinking block fields.
+	Data string `json:"data,omitempty"` // encrypted redacted thinking data
 
 	// Cache control for any block.
 	CacheControl *CacheControl `json:"cache_control,omitempty"`

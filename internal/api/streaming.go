@@ -48,9 +48,11 @@ type ContentBlockDeltaData struct {
 
 // BlockDelta represents the incremental update in a content_block_delta event.
 type BlockDelta struct {
-	Type        string `json:"type"`                   // "text_delta" or "input_json_delta"
+	Type        string `json:"type"`                   // "text_delta", "input_json_delta", "thinking_delta", or "signature_delta"
 	Text        string `json:"text,omitempty"`          // for text_delta
 	PartialJSON string `json:"partial_json,omitempty"`  // for input_json_delta
+	Thinking    string `json:"thinking,omitempty"`      // for thinking_delta
+	Signature   string `json:"signature,omitempty"`     // for signature_delta
 }
 
 // ContentBlockStopData is the data for a content_block_stop event.
@@ -78,6 +80,8 @@ type StreamHandler interface {
 	OnMessageStart(msg MessageResponse)
 	OnContentBlockStart(index int, block ContentBlock)
 	OnTextDelta(index int, text string)
+	OnThinkingDelta(index int, thinking string)
+	OnSignatureDelta(index int, signature string)
 	OnInputJSONDelta(index int, partialJSON string)
 	OnContentBlockStop(index int)
 	OnMessageDelta(delta MessageDeltaBody, usage *Usage)
@@ -151,6 +155,10 @@ func dispatchEvent(eventType string, data []byte, handler StreamHandler) error {
 		switch d.Delta.Type {
 		case "text_delta":
 			handler.OnTextDelta(d.Index, d.Delta.Text)
+		case "thinking_delta":
+			handler.OnThinkingDelta(d.Index, d.Delta.Thinking)
+		case "signature_delta":
+			handler.OnSignatureDelta(d.Index, d.Delta.Signature)
 		case "input_json_delta":
 			handler.OnInputJSONDelta(d.Index, d.Delta.PartialJSON)
 		}

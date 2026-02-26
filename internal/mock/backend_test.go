@@ -28,6 +28,10 @@ func (h *testHandler) OnTextDelta(_ int, text string) {
 	h.textParts = append(h.textParts, text)
 }
 
+func (h *testHandler) OnThinkingDelta(_ int, _ string) {}
+
+func (h *testHandler) OnSignatureDelta(_ int, _ string) {}
+
 func (h *testHandler) OnInputJSONDelta(_ int, _ string) {}
 
 func (h *testHandler) OnContentBlockStop(_ int) {}

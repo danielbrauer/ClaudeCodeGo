@@ -55,6 +55,10 @@ func (h *JSONStreamHandler) OnTextDelta(index int, text string) {
 	h.textBufs[index] += text
 }
 
+func (h *JSONStreamHandler) OnThinkingDelta(index int, thinking string) {}
+
+func (h *JSONStreamHandler) OnSignatureDelta(index int, signature string) {}
+
 func (h *JSONStreamHandler) OnInputJSONDelta(index int, partialJSON string) {
 	h.jsonBufs[index] = append(h.jsonBufs[index], []byte(partialJSON)...)
 }
@@ -151,6 +155,16 @@ func (h *StreamJSONStreamHandler) OnTextDelta(index int, text string) {
 		"text":  text,
 	})
 }
+
+func (h *StreamJSONStreamHandler) OnThinkingDelta(index int, thinking string) {
+	h.emit(map[string]interface{}{
+		"type":     "thinking_delta",
+		"index":    index,
+		"thinking": thinking,
+	})
+}
+
+func (h *StreamJSONStreamHandler) OnSignatureDelta(index int, signature string) {}
 
 func (h *StreamJSONStreamHandler) OnInputJSONDelta(index int, partialJSON string) {
 	h.emit(map[string]interface{}{

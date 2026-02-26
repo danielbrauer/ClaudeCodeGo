@@ -22,6 +22,8 @@ type collectingHandler struct {
 func (h *collectingHandler) OnMessageStart(_ api.MessageResponse)              {}
 func (h *collectingHandler) OnContentBlockStart(_ int, _ api.ContentBlock)     {}
 func (h *collectingHandler) OnTextDelta(_ int, text string)                    { h.texts = append(h.texts, text) }
+func (h *collectingHandler) OnThinkingDelta(_ int, _ string)                   {}
+func (h *collectingHandler) OnSignatureDelta(_ int, _ string)                  {}
 func (h *collectingHandler) OnInputJSONDelta(_ int, _ string)                  {}
 func (h *collectingHandler) OnContentBlockStop(_ int)                          {}
 func (h *collectingHandler) OnMessageDelta(_ api.MessageDeltaBody, _ *api.Usage) {}

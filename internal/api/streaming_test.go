@@ -29,6 +29,10 @@ func (h *testHandler) OnTextDelta(index int, text string) {
 	h.textDeltas = append(h.textDeltas, text)
 }
 
+func (h *testHandler) OnThinkingDelta(index int, thinking string) {}
+
+func (h *testHandler) OnSignatureDelta(index int, signature string) {}
+
 func (h *testHandler) OnInputJSONDelta(index int, partialJSON string) {
 	h.jsonDeltas = append(h.jsonDeltas, partialJSON)
 }

@@ -44,6 +44,10 @@ func (h *TUIStreamHandler) OnTextDelta(index int, text string) {
 	h.program.Send(TextDeltaMsg{Index: index, Text: text})
 }
 
+func (h *TUIStreamHandler) OnThinkingDelta(index int, thinking string) {}
+
+func (h *TUIStreamHandler) OnSignatureDelta(index int, signature string) {}
+
 func (h *TUIStreamHandler) OnInputJSONDelta(index int, partialJSON string) {
 	if h.jsonBufs != nil {
 		h.jsonBufs[index] = append(h.jsonBufs[index], []byte(partialJSON)...)
