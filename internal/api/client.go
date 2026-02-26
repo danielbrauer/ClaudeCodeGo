@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -31,13 +32,14 @@ type RefreshableTokenSource interface {
 
 // Client is the Claude Messages API client.
 type Client struct {
-	baseURL     string
-	apiVersion  string
-	httpClient  *http.Client
-	tokenSource TokenSource
-	model       string
-	maxTokens   int
-	userAgent   string // Issue 14: User-Agent header
+	baseURL       string
+	apiVersion    string
+	httpClient    *http.Client
+	tokenSource   TokenSource
+	model         string
+	maxTokens     int
+	userAgent     string // Issue 14: User-Agent header
+	customHeaders map[string]string
 }
 
 // ClientOption configures the client.
@@ -69,6 +71,11 @@ func WithVersion(version string) ClientOption {
 	return func(c *Client) { c.userAgent = "claude-code/" + version }
 }
 
+// WithCustomHeaders sets additional HTTP headers from ANTHROPIC_CUSTOM_HEADERS env var.
+func WithCustomHeaders(headers map[string]string) ClientOption {
+	return func(c *Client) { c.customHeaders = headers }
+}
+
 // NewClient creates a new API client.
 func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 	c := &Client{
@@ -83,7 +90,36 @@ func NewClient(tokenSource TokenSource, opts ...ClientOption) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	// Parse ANTHROPIC_CUSTOM_HEADERS if no custom headers were explicitly set.
+	if c.customHeaders == nil {
+		c.customHeaders = ParseCustomHeaders(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"))
+	}
+
 	return c
+}
+
+// ParseCustomHeaders parses the ANTHROPIC_CUSTOM_HEADERS env var format.
+// Format: "header1:value1,header2:value2"
+func ParseCustomHeaders(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	headers := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if idx := strings.Index(pair, ":"); idx > 0 {
+			key := strings.TrimSpace(pair[:idx])
+			val := strings.TrimSpace(pair[idx+1:])
+			if key != "" {
+				headers[key] = val
+			}
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
 }
 
 // Model returns the current model.
@@ -112,11 +148,11 @@ func (c *Client) CreateMessageStream(
 	}
 	req.Stream = true
 
-	// Collect extra beta headers needed for this request.
-	var extraBetas []string
-	if req.Speed == "fast" {
-		extraBetas = append(extraBetas, FastModeBeta)
-	}
+	// Collect conditional beta headers needed for this request.
+	extraBetas := c.collectBetas(req)
+
+	// Mirror betas in the request body (JS sends both header and body).
+	req.Betas = extraBetas
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -155,7 +191,7 @@ func (c *Client) doAPIRequest(ctx context.Context, body []byte, extraBetas []str
 		}
 
 		httpReq, err := http.NewRequestWithContext(
-			ctx, "POST", c.baseURL+"/v1/messages?beta=true", bytes.NewReader(body),
+			ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("creating request: %w", err)
@@ -164,15 +200,17 @@ func (c *Client) doAPIRequest(ctx context.Context, body []byte, extraBetas []str
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("anthropic-version", c.apiVersion)
-		betaValues := []string{"claude-code-20250219", "oauth-2025-04-20"}
-		betaValues = append(betaValues, extraBetas...)
+		betaValues := append([]string{"claude-code-20250219", "oauth-2025-04-20"}, extraBetas...)
 		httpReq.Header.Set("anthropic-beta", strings.Join(betaValues, ","))
 		httpReq.Header.Set("x-app", "cli")
-		// Issue 14: User-Agent header.
+		httpReq.Header.Set("x-client-app", "claude-code")
 		httpReq.Header.Set("User-Agent", c.userAgent)
-		// Issue 16: Accept header — use application/json, not text/event-stream.
-		// Streaming is controlled by the "stream" body parameter, not Accept.
 		httpReq.Header.Set("Accept", "application/json")
+
+		// Apply custom headers from ANTHROPIC_CUSTOM_HEADERS.
+		for k, v := range c.customHeaders {
+			httpReq.Header.Set(k, v)
+		}
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
@@ -231,6 +269,34 @@ func (c *Client) CreateMessage(
 	}
 
 	return &msgResp, nil
+}
+
+// collectBetas computes the set of conditional beta headers for a request,
+// matching the JS CLI's conditional beta logic.
+func (c *Client) collectBetas(req *CreateMessageRequest) []string {
+	var betas []string
+
+	// Fast mode beta.
+	if req.Speed == "fast" {
+		betas = append(betas, FastModeBeta)
+	}
+
+	// Interleaved thinking — enabled when thinking config is present.
+	if req.Thinking != nil && req.Thinking.Type == "enabled" {
+		betas = append(betas, BetaInterleavedThinking)
+	}
+
+	// Parse ANTHROPIC_BETAS env var for user-specified custom betas.
+	if envBetas := os.Getenv("ANTHROPIC_BETAS"); envBetas != "" {
+		for _, b := range strings.Split(envBetas, ",") {
+			b = strings.TrimSpace(b)
+			if b != "" {
+				betas = append(betas, b)
+			}
+		}
+	}
+
+	return betas
 }
 
 // responseAssembler collects streaming events into a final MessageResponse.

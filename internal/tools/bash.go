@@ -18,9 +18,11 @@ const (
 
 // BashInput is the input schema for the Bash tool.
 type BashInput struct {
-	Command     string `json:"command"`
-	Description string `json:"description,omitempty"`
-	Timeout     *int   `json:"timeout,omitempty"` // milliseconds
+	Command                  string `json:"command"`
+	Description              string `json:"description,omitempty"`
+	Timeout                  *int   `json:"timeout,omitempty"` // milliseconds
+	RunInBackground          *bool  `json:"run_in_background,omitempty"`
+	DangerouslyDisableSandbox *bool `json:"dangerouslyDisableSandbox,omitempty"`
 }
 
 // BashTool executes shell commands.
@@ -60,6 +62,14 @@ func (t *BashTool) InputSchema() json.RawMessage {
     "timeout": {
       "type": "number",
       "description": "Optional timeout in milliseconds (max 600000)"
+    },
+    "run_in_background": {
+      "type": "boolean",
+      "description": "Set to true to run this command in the background"
+    },
+    "dangerouslyDisableSandbox": {
+      "type": "boolean",
+      "description": "Set to true to override sandbox mode and run without sandboxing"
     }
   },
   "required": ["command"],

@@ -20,6 +20,9 @@ type AgentInput struct {
 	Resume          *string `json:"resume,omitempty"`
 	RunInBackground *bool   `json:"run_in_background,omitempty"`
 	MaxTurns        *int    `json:"max_turns,omitempty"`
+	Name            *string `json:"name,omitempty"`
+	Mode            *string `json:"mode,omitempty"`
+	Isolation       *string `json:"isolation,omitempty"`
 }
 
 // agentState tracks a running or completed sub-agent.
@@ -108,6 +111,20 @@ func (t *AgentTool) InputSchema() json.RawMessage {
       "type": "integer",
       "description": "Maximum number of agentic turns before stopping",
       "exclusiveMinimum": 0
+    },
+    "name": {
+      "type": "string",
+      "description": "Name for the spawned agent"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["acceptEdits", "bypassPermissions", "default", "dontAsk", "plan"],
+      "description": "Permission mode for the agent"
+    },
+    "isolation": {
+      "type": "string",
+      "enum": ["worktree"],
+      "description": "Isolation mode for the agent"
     }
   },
   "required": ["description", "prompt", "subagent_type"],

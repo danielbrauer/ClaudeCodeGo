@@ -23,6 +23,11 @@ const FastModeDisplayName = "Opus 4.6"
 // FastModeBeta is the beta header value required for fast mode.
 const FastModeBeta = "fast-mode-2026-02-01"
 
+// Conditional beta header values matching the JS CLI.
+const (
+	BetaInterleavedThinking = "interleaved-thinking-2025-05-14"
+)
+
 // Friendly model name mapping.
 var ModelAliases = map[string]string{
 	"opus":   ModelClaude46Opus,
@@ -94,18 +99,33 @@ const (
 
 // CreateMessageRequest is the request body for POST /v1/messages.
 type CreateMessageRequest struct {
-	Model     string            `json:"model"`
-	MaxTokens int               `json:"max_tokens"`
-	Messages  []Message         `json:"messages"`
-	System    []SystemBlock     `json:"system,omitempty"`
-	Tools     []ToolDefinition  `json:"tools,omitempty"`
-	Stream    bool              `json:"stream,omitempty"`
-	Metadata  *RequestMetadata  `json:"metadata,omitempty"`
-	StopSeqs  []string          `json:"stop_sequences,omitempty"`
-	Temp      *float64          `json:"temperature,omitempty"`
-	TopP      *float64          `json:"top_p,omitempty"`
-	TopK      *int              `json:"top_k,omitempty"`
-	Speed string `json:"speed,omitempty"`
+	Model      string            `json:"model"`
+	MaxTokens  int               `json:"max_tokens"`
+	Messages   []Message         `json:"messages"`
+	System     []SystemBlock     `json:"system,omitempty"`
+	Tools      []ToolDefinition  `json:"tools,omitempty"`
+	Stream     bool              `json:"stream,omitempty"`
+	Metadata   *RequestMetadata  `json:"metadata,omitempty"`
+	StopSeqs   []string          `json:"stop_sequences,omitempty"`
+	Temp       *float64          `json:"temperature,omitempty"`
+	TopP       *float64          `json:"top_p,omitempty"`
+	TopK       *int              `json:"top_k,omitempty"`
+	Speed      string            `json:"speed,omitempty"`
+	Betas      []string          `json:"betas,omitempty"`
+	Thinking   *ThinkingConfig   `json:"thinking,omitempty"`
+	ToolChoice *ToolChoice       `json:"tool_choice,omitempty"`
+}
+
+// ThinkingConfig controls extended/interleaved thinking.
+type ThinkingConfig struct {
+	Type         string `json:"type"`                    // "enabled", "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // max thinking tokens
+}
+
+// ToolChoice constrains which tools the model can use.
+type ToolChoice struct {
+	Type string `json:"type"`           // "auto", "any", "tool", "none"
+	Name string `json:"name,omitempty"` // specific tool name (when type="tool")
 }
 
 // RequestMetadata holds metadata sent with API requests.

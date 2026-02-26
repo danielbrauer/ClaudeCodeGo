@@ -40,14 +40,18 @@ func (t *TaskOutputTool) InputSchema() json.RawMessage {
     },
     "block": {
       "type": "boolean",
+      "default": true,
       "description": "Whether to wait for completion"
     },
     "timeout": {
       "type": "number",
-      "description": "Max wait time in ms"
+      "default": 30000,
+      "description": "Max wait time in ms",
+      "minimum": 0,
+      "maximum": 600000
     }
   },
-  "required": ["task_id"],
+  "required": ["task_id", "block", "timeout"],
   "additionalProperties": false
 }`)
 }

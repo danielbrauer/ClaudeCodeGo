@@ -40,6 +40,11 @@ func (t *ConfigTool) InputSchema() json.RawMessage {
       "description": "The setting path (e.g. \"model\", \"theme\")"
     },
     "value": {
+      "oneOf": [
+        {"type": "string"},
+        {"type": "boolean"},
+        {"type": "number"}
+      ],
       "description": "The value to set (omit to get current value)"
     }
   },
