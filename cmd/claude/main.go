@@ -92,6 +92,33 @@ func main() {
 	dangerousNoPermissions := flag.Bool("dangerously-skip-permissions", false, "Skip all permission prompts (use with caution)")
 	permissionModeFlag := flag.String("permission-mode", "", "Set session permission mode: default, plan, acceptEdits, bypassPermissions")
 	outputFormat := flag.String("output-format", "text", "Output format: text, json, stream-json")
+
+	// Session management flags.
+	sessionIDFlag := flag.String("session-id", "", "Specify session UUID")
+
+	// Model/thinking control flags.
+	effortFlag := flag.String("effort", "", "Effort level: low, medium, high, max")
+	thinkingFlag := flag.String("thinking", "", "Thinking mode: enabled, adaptive, disabled")
+	maxThinkingTokens := flag.Int("max-thinking-tokens", 0, "Maximum thinking tokens")
+	betasFlag := flag.String("betas", "", "Additional beta headers (comma-separated)")
+
+	// System prompt override flags.
+	systemPromptFlag := flag.String("system-prompt", "", "Custom system prompt (replaces default)")
+	appendSystemPromptFlag := flag.String("append-system-prompt", "", "Append to default system prompt")
+
+	// Agent/print mode control flags.
+	maxTurnsFlag := flag.Int("max-turns", 0, "Maximum agentic turns (print mode)")
+
+	// Permission control flags.
+	allowedToolsFlag := flag.String("allowedTools", "", "Comma-separated list of tools to allow")
+	disallowedToolsFlag := flag.String("disallowedTools", "", "Comma-separated list of tools to deny")
+
+	// Debug flags.
+	verboseFlag := flag.Bool("verbose", false, "Enable verbose output")
+
+	// Other flags.
+	addDirFlag := flag.String("add-dir", "", "Additional directories (comma-separated)")
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -180,6 +207,11 @@ func main() {
 		model = api.ResolveModelAlias(*modelFlag)
 	}
 
+	// Apply verbose flag to settings.
+	if *verboseFlag {
+		settings.Verbose = config.BoolPtr(true)
+	}
+
 	// Create API client.
 	client := api.NewClient(
 		tokenProvider,
@@ -210,6 +242,43 @@ func main() {
 		CurrentDate: conversation.FormatCurrentDate(),
 	}
 	contextMessage := conversation.BuildContextMessage(userContext)
+
+	// Apply system prompt overrides from CLI flags.
+	if *systemPromptFlag != "" {
+		// Replace entire system prompt with custom prompt.
+		system = []api.SystemBlock{{Type: "text", Text: *systemPromptFlag}}
+	}
+	if *appendSystemPromptFlag != "" {
+		// Append to existing system prompt.
+		system = append(system, api.SystemBlock{Type: "text", Text: *appendSystemPromptFlag})
+	}
+
+	// Apply --betas flag: additional beta headers passed to client via env.
+	if *betasFlag != "" {
+		existing := os.Getenv("ANTHROPIC_BETAS")
+		if existing != "" {
+			os.Setenv("ANTHROPIC_BETAS", existing+","+*betasFlag)
+		} else {
+			os.Setenv("ANTHROPIC_BETAS", *betasFlag)
+		}
+	}
+
+	// Apply --add-dir flag: additional directories to include.
+	if *addDirFlag != "" {
+		for _, dir := range strings.Split(*addDirFlag, ",") {
+			dir = strings.TrimSpace(dir)
+			if dir != "" {
+				// Load CLAUDE.md from additional directories.
+				extraContent := config.LoadClaudeMD(dir)
+				if extraContent != "" {
+					system = append(system, api.SystemBlock{
+						Type: "text",
+						Text: fmt.Sprintf("# Additional Directory Instructions (%s)\n\n%s", dir, extraContent),
+					})
+				}
+			}
+		}
+	}
 
 	// Determine the initial permission mode.
 	// Priority: --dangerously-skip-permissions > --permission-mode > settings > default.
@@ -243,6 +312,28 @@ func main() {
 			if !showBypassPermissionsWarning() {
 				fmt.Println("Bypass permissions mode declined. Exiting.")
 				os.Exit(0)
+			}
+		}
+	}
+
+	// Apply --allowedTools / --disallowedTools to permission rules.
+	if *allowedToolsFlag != "" {
+		for _, t := range strings.Split(*allowedToolsFlag, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				settings.Permissions = append([]config.PermissionRule{{
+					Tool: t, Action: "allow",
+				}}, settings.Permissions...)
+			}
+		}
+	}
+	if *disallowedToolsFlag != "" {
+		for _, t := range strings.Split(*disallowedToolsFlag, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				settings.Permissions = append([]config.PermissionRule{{
+					Tool: t, Action: "deny",
+				}}, settings.Permissions...)
 			}
 		}
 	}
@@ -351,8 +442,12 @@ func main() {
 
 	// Create a new session if not resuming.
 	if currentSession == nil {
+		sid := session.GenerateID()
+		if *sessionIDFlag != "" {
+			sid = *sessionIDFlag
+		}
 		currentSession = &session.Session{
-			ID:    session.GenerateID(),
+			ID:    sid,
 			Model: model,
 			CWD:   cwd,
 		}
@@ -395,6 +490,32 @@ func main() {
 	})
 	loop.SetFastMode(fastMode)
 
+	// Apply thinking/effort configuration from CLI flags.
+	thinkingMode := ""
+	if *thinkingFlag != "" {
+		thinkingMode = *thinkingFlag
+	} else if *effortFlag != "" {
+		// Effort maps to thinking: low/medium = disabled, high/max = enabled.
+		switch *effortFlag {
+		case "low", "medium":
+			thinkingMode = "disabled"
+		case "high", "max":
+			thinkingMode = "enabled"
+		}
+	} else if settings.ThinkingEnabled != nil && *settings.ThinkingEnabled {
+		thinkingMode = "enabled"
+	}
+	if thinkingMode == "enabled" {
+		thinkingTokens := *maxThinkingTokens
+		if thinkingTokens == 0 {
+			thinkingTokens = 10000 // default thinking budget
+		}
+		loop.SetThinking(&api.ThinkingConfig{
+			Type:         "enabled",
+			BudgetTokens: thinkingTokens,
+		})
+	}
+
 	// Handle initial prompt from arguments.
 	args := flag.Args()
 	initialPrompt := ""
@@ -415,6 +536,11 @@ func main() {
 			}
 			*printMode = true // force print mode when piped
 		}
+	}
+
+	// Apply max-turns for print mode.
+	if *maxTurnsFlag > 0 {
+		loop.SetMaxTurns(*maxTurnsFlag)
 	}
 
 	// Print mode: use simple handler, no TUI.

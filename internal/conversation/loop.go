@@ -47,6 +47,8 @@ type Loop struct {
 	hooks          HookRunner // Phase 7: nil = no hooks
 	fastMode       bool       // when true, sends speed:"fast" on eligible models
 	contextMessage string     // <system-reminder> context prepended to messages
+	thinking       *api.ThinkingConfig
+	maxTurns       int // 0 = unlimited
 }
 
 // LoopConfig configures the agentic loop.
@@ -107,6 +109,16 @@ func (l *Loop) FastMode() bool {
 // SetFastMode enables or disables fast mode.
 func (l *Loop) SetFastMode(on bool) {
 	l.fastMode = on
+}
+
+// SetThinking configures extended thinking for the loop.
+func (l *Loop) SetThinking(cfg *api.ThinkingConfig) {
+	l.thinking = cfg
+}
+
+// SetMaxTurns sets the maximum number of agentic turns (0 = unlimited).
+func (l *Loop) SetMaxTurns(n int) {
+	l.maxTurns = n
 }
 
 // SetPermissionHandler replaces the permission handler on the tool executor.
@@ -170,6 +182,7 @@ func (l *Loop) SetOnTurnComplete(fn func(history *History)) {
 }
 
 func (l *Loop) run(ctx context.Context) error {
+	turnCount := 0
 	for {
 		msgs := l.history.Messages()
 
@@ -203,6 +216,11 @@ func (l *Loop) run(ctx context.Context) error {
 		// Apply fast mode: add speed:"fast" when enabled on an eligible model.
 		if l.fastMode && api.IsOpus46Model(l.client.Model()) {
 			req.Speed = "fast"
+		}
+
+		// Apply thinking configuration.
+		if l.thinking != nil {
+			req.Thinking = l.thinking
 		}
 
 		resp, err := l.client.CreateMessageStream(ctx, req, l.handler)
@@ -288,6 +306,12 @@ func (l *Loop) run(ctx context.Context) error {
 
 		l.history.AddToolResults(toolResults)
 		l.notifyTurnComplete()
+
+		// Enforce max turns limit.
+		turnCount++
+		if l.maxTurns > 0 && turnCount >= l.maxTurns {
+			return nil
+		}
 		// Loop back to call API again with tool results.
 	}
 }
