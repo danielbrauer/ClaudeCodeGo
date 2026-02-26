@@ -456,8 +456,12 @@ func main() {
 		}
 	}
 
-	// Create compactor for auto-compaction.
-	compactor := conversation.NewCompactor(client)
+	// Create compactor for auto-compaction (unless disabled).
+	var compactor *conversation.Compactor
+	disableCompact := os.Getenv("DISABLE_COMPACT") != ""
+	if !disableCompact {
+		compactor = conversation.NewCompactor(client)
+	}
 
 	// Resolve fast mode from settings.
 	fastMode := settings.FastMode != nil && *settings.FastMode

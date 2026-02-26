@@ -15,7 +15,8 @@ import (
 // Runner executes hooks based on a HookConfig.
 // It implements conversation.HookRunner.
 type Runner struct {
-	config HookConfig
+	config             HookConfig
+	pendingInjections  []string // prompt hook content awaiting injection
 }
 
 // NewRunner creates a new hook runner from the given config.
@@ -41,8 +42,22 @@ func (r *Runner) RunPreToolUse(ctx context.Context, toolName string, input json.
 		if result.Error != nil {
 			return fmt.Errorf("PreToolUse hook blocked: %w", result.Error)
 		}
+		// Collect prompt injections for the conversation.
+		if result.PromptInject != "" {
+			r.pendingInjections = append(r.pendingInjections, result.PromptInject)
+		}
 	}
 	return nil
+}
+
+// PendingInjections returns and clears any prompt content from prompt hooks.
+func (r *Runner) PendingInjections() []string {
+	if len(r.pendingInjections) == 0 {
+		return nil
+	}
+	result := r.pendingInjections
+	r.pendingInjections = nil
+	return result
 }
 
 // RunPostToolUse fires all PostToolUse hooks. Errors are logged but do not
@@ -97,6 +112,11 @@ func (r *Runner) RunUserPromptSubmit(ctx context.Context, message string) (conve
 		result := r.executeHook(ctx, hook, env)
 		if result.Error != nil {
 			return conversation.HookSubmitResult{Block: true, Message: currentMsg}, result.Error
+		}
+		// Prompt hooks inject content.
+		if result.PromptInject != "" {
+			r.pendingInjections = append(r.pendingInjections, result.PromptInject)
+			continue
 		}
 		// If the hook produced stdout, use it as the (possibly modified) message.
 		if trimmed := strings.TrimSpace(result.Output); trimmed != "" {
@@ -171,10 +191,8 @@ func (r *Runner) executeHook(ctx context.Context, hook HookDef, extraEnv []strin
 	case "command":
 		return r.runCommand(ctx, hook.Command, extraEnv)
 	case "prompt":
-		// Prompt hooks inject additional context. For now, we treat them
-		// as a no-op success — the prompt content is available via the
-		// hook definition itself, and the caller can inject it.
-		return HookResult{Output: hook.Prompt}
+		// Prompt hooks inject additional context into the conversation.
+		return HookResult{Output: hook.Prompt, PromptInject: hook.Prompt}
 	case "agent":
 		// Agent hooks spawn a sub-process. For now, treat as a command.
 		return r.runCommand(ctx, hook.Command, extraEnv)

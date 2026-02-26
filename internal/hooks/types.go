@@ -35,6 +35,7 @@ type HookDef struct {
 
 // HookResult is the outcome of a hook execution.
 type HookResult struct {
-	Output string // stdout from the hook command
-	Error  error  // non-nil if the hook failed or blocked
+	Output       string // stdout from the hook command
+	Error        error  // non-nil if the hook failed or blocked
+	PromptInject string // content to inject into conversation (from prompt hooks)
 }
