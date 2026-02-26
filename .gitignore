@@ -31,3 +31,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Gas Town (added by gt)
+.runtime/
+.claude/commands/
+.logs/
+.beads/
