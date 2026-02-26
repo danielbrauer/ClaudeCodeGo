@@ -149,26 +149,28 @@ func pickGitFile(authorEmail string) string {
 // maxInputLines is the upper bound for auto-expanding the text input height.
 const maxInputLines = 10
 
-// updateTextInputHeight adjusts the textarea height to match the visual line
-// count (accounting for both hard newlines and word wrapping), clamped to
-// [1, maxInputLines].
+// updateTextInputHeight sets the textarea height to match the actual number
+// of content lines the textarea renders. Callers must pre-expand the height
+// to maxInputLines before textarea.Update() so the viewport doesn't scroll;
+// this function then measures the real content and shrinks to fit.
 func updateTextInputHeight(m *model) {
-	val := m.textInput.Value()
-	if val == "" {
+	if m.textInput.Value() == "" {
 		m.textInput.SetHeight(1)
 		return
 	}
 
-	// Width() already subtracts prompt width internally, so use it directly.
-	textWidth := m.textInput.Width()
-	if textWidth < 1 {
-		textWidth = 1
+	// The textarea is already pre-expanded to maxInputLines. Render its
+	// View() — this includes content lines followed by blank padding lines
+	// (EndOfBufferCharacter defaults to space). Count non-blank lines.
+	view := m.textInput.View()
+	lines := strings.Split(view, "\n")
+	visual := len(lines)
+	for visual > 0 && strings.TrimSpace(ansi.Strip(lines[visual-1])) == "" {
+		visual--
 	}
-
-	// Use the same wrapping the textarea uses: word wrap then hard wrap.
-	wrapped := ansi.Hardwrap(ansi.Wordwrap(val, textWidth, ""), textWidth, true)
-	visual := strings.Count(wrapped, "\n") + 1
-
+	if visual < 1 {
+		visual = 1
+	}
 	if visual > maxInputLines {
 		visual = maxInputLines
 	}
