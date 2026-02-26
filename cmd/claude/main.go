@@ -189,7 +189,25 @@ func main() {
 	)
 
 	// Build system prompt with settings context and skill content.
-	system := conversation.BuildSystemPrompt(cwd, settings, skillContent)
+	system := conversation.BuildSystemPrompt(&conversation.PromptContext{
+		CWD:          cwd,
+		Model:        model,
+		Settings:     settings,
+		SkillContent: skillContent,
+		Version:      version,
+	})
+
+	// Collect context for injection into user messages (matching JS CLI pattern).
+	// This includes CLAUDE.md, current date, and git status.
+	claudeMDEntries := config.LoadClaudeMDEntries(cwd)
+	claudeMDFormatted := config.FormatClaudeMDForContext(claudeMDEntries)
+	gitStatus := conversation.CollectGitStatus(cwd)
+	userContext := conversation.UserContext{
+		ClaudeMD:    claudeMDFormatted,
+		CurrentDate: conversation.FormatCurrentDate(),
+		GitStatus:   gitStatus,
+	}
+	contextMessage := conversation.BuildContextMessage(userContext)
 
 	// Determine the initial permission mode.
 	// Priority: --dangerously-skip-permissions > --permission-mode > settings > default.
@@ -354,14 +372,15 @@ func main() {
 	// In print mode, use the simple PrintStreamHandler.
 	handler := &conversation.ToolAwareStreamHandler{}
 	loop := conversation.NewLoop(conversation.LoopConfig{
-		Client:    client,
-		System:    system,
-		Tools:     registry.Definitions(),
-		ToolExec:  registry,
-		Handler:   handler,
-		History:   history,
-		Compactor: compactor,
-		Hooks:     hookRunner, // Phase 7: wire hooks into the loop
+		Client:         client,
+		System:         system,
+		Tools:          registry.Definitions(),
+		ToolExec:       registry,
+		Handler:        handler,
+		History:        history,
+		Compactor:      compactor,
+		Hooks:          hookRunner, // Phase 7: wire hooks into the loop
+		ContextMessage: contextMessage,
 		OnTurnComplete: func(h *conversation.History) {
 			// Save session after each turn.
 			if sessionStore != nil && currentSession != nil {

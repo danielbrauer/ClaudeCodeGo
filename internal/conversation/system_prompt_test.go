@@ -4,44 +4,56 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/anthropics/claude-code-go/internal/api"
 	"github.com/anthropics/claude-code-go/internal/config"
 )
 
+func testCtx() *PromptContext {
+	return &PromptContext{
+		CWD:   "/test",
+		Model: api.ModelClaude46Opus,
+	}
+}
+
 func TestSectionIdentity(t *testing.T) {
-	ctx := &PromptContext{CWD: "/test"}
+	ctx := testCtx()
 	text := sectionIdentity(ctx)
 	if !strings.Contains(text, "Claude Code") {
 		t.Error("identity section should mention Claude Code")
 	}
-	if !strings.Contains(text, "tools") {
-		t.Error("identity section should mention tools")
+	if !strings.Contains(text, "interactive agent") {
+		t.Error("identity section should mention interactive agent")
+	}
+	if !strings.Contains(text, "security testing") {
+		t.Error("identity section should contain security guardrails")
 	}
 }
 
-func TestSectionSecurityGuardrails(t *testing.T) {
-	ctx := &PromptContext{}
-	text := sectionSecurityGuardrails(ctx)
+func TestSectionSystem(t *testing.T) {
+	ctx := testCtx()
+	text := sectionSystem(ctx)
+	if !strings.HasPrefix(text, "# System") {
+		t.Error("system section should start with # System header")
+	}
 	for _, want := range []string{
-		"authorized security testing",
-		"CTF challenges",
-		"DoS attacks",
-		"supply chain compromise",
-		"Dual-use security tools",
-		"pentesting engagements",
+		"permission mode",
+		"system-reminder",
+		"prompt injection",
+		"hooks",
+		"context limits",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("security guardrails should contain %q", want)
+			t.Errorf("system section should contain %q", want)
 		}
 	}
 }
 
-func TestSectionTaskPhilosophy(t *testing.T) {
-	ctx := &PromptContext{}
-	text := sectionTaskPhilosophy(ctx)
+func TestSectionDoingTasks(t *testing.T) {
+	ctx := testCtx()
+	text := sectionDoingTasks(ctx)
 	if !strings.HasPrefix(text, "# Doing tasks") {
-		t.Error("task philosophy should start with Doing tasks header")
+		t.Error("doing tasks should start with header")
 	}
 	for _, want := range []string{
 		"over-engineering",
@@ -50,15 +62,16 @@ func TestSectionTaskPhilosophy(t *testing.T) {
 		"backwards-compatibility hacks",
 		"premature abstraction",
 		"time estimates",
+		"brute force",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("task philosophy should contain %q", want)
+			t.Errorf("doing tasks should contain %q", want)
 		}
 	}
 }
 
 func TestSectionActionCare(t *testing.T) {
-	ctx := &PromptContext{}
+	ctx := testCtx()
 	text := sectionActionCare(ctx)
 	if !strings.HasPrefix(text, "# Executing actions with care") {
 		t.Error("action care should start with header")
@@ -76,29 +89,72 @@ func TestSectionActionCare(t *testing.T) {
 	}
 }
 
+func TestSectionUsingTools(t *testing.T) {
+	ctx := testCtx()
+	text := sectionUsingTools(ctx)
+	if !strings.HasPrefix(text, "# Using your tools") {
+		t.Error("using tools should start with header")
+	}
+	for _, want := range []string{
+		"Read instead of cat",
+		"Edit instead of sed",
+		"Write instead of cat with heredoc",
+		"Glob instead of find",
+		"Grep instead of grep",
+		"parallel tool calls",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("using tools should contain %q", want)
+		}
+	}
+}
+
+func TestSectionToneStyle(t *testing.T) {
+	ctx := testCtx()
+	text := sectionToneStyle(ctx)
+	if !strings.HasPrefix(text, "# Tone and style") {
+		t.Error("tone style should start with header")
+	}
+	for _, want := range []string{
+		"emojis",
+		"concise",
+		"file_path:line_number",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("tone style should contain %q", want)
+		}
+	}
+}
+
 func TestSectionEnvironment(t *testing.T) {
-	ctx := &PromptContext{CWD: "/my/project"}
+	ctx := &PromptContext{CWD: "/my/project", Model: api.ModelClaude46Opus}
 	text := sectionEnvironment(ctx)
 	if !strings.Contains(text, "/my/project") {
 		t.Errorf("should include CWD, got: %s", text)
 	}
 	if !strings.Contains(text, runtime.GOOS) {
-		t.Errorf("should include OS, got: %s", text)
+		t.Errorf("should include platform, got: %s", text)
 	}
-	if !strings.Contains(text, time.Now().Format("2006-01-02")) {
-		t.Errorf("should include today's date, got: %s", text)
+	if !strings.Contains(text, "Opus 4.6") {
+		t.Errorf("should include model display name, got: %s", text)
+	}
+	if !strings.Contains(text, "knowledge cutoff") {
+		t.Errorf("should include knowledge cutoff, got: %s", text)
+	}
+	if !strings.Contains(text, "fast_mode_info") {
+		t.Errorf("should include fast mode info, got: %s", text)
 	}
 }
 
 func TestSectionSkills_Empty(t *testing.T) {
-	ctx := &PromptContext{}
+	ctx := testCtx()
 	if text := sectionSkills(ctx); text != "" {
 		t.Errorf("empty skill content should produce empty string, got: %q", text)
 	}
 }
 
 func TestSectionSkills_NonEmpty(t *testing.T) {
-	ctx := &PromptContext{SkillContent: "some skill instructions"}
+	ctx := &PromptContext{CWD: "/test", Model: api.ModelClaude46Opus, SkillContent: "some skill instructions"}
 	text := sectionSkills(ctx)
 	if !strings.HasPrefix(text, "# Active Skills") {
 		t.Error("skills section should start with header")
@@ -109,14 +165,14 @@ func TestSectionSkills_NonEmpty(t *testing.T) {
 }
 
 func TestSectionPermissions_NilSettings(t *testing.T) {
-	ctx := &PromptContext{}
+	ctx := testCtx()
 	if text := sectionPermissions(ctx); text != "" {
 		t.Errorf("nil settings should produce empty string, got: %q", text)
 	}
 }
 
 func TestSectionPermissions_EmptyRules(t *testing.T) {
-	ctx := &PromptContext{Settings: &config.Settings{}}
+	ctx := &PromptContext{CWD: "/test", Model: api.ModelClaude46Opus, Settings: &config.Settings{}}
 	if text := sectionPermissions(ctx); text != "" {
 		t.Errorf("empty permissions should produce empty string, got: %q", text)
 	}
@@ -124,6 +180,8 @@ func TestSectionPermissions_EmptyRules(t *testing.T) {
 
 func TestSectionPermissions_WithRules(t *testing.T) {
 	ctx := &PromptContext{
+		CWD:   "/test",
+		Model: api.ModelClaude46Opus,
 		Settings: &config.Settings{
 			Permissions: []config.PermissionRule{
 				{Tool: "Bash", Pattern: "npm:*", Action: "allow"},
@@ -140,7 +198,7 @@ func TestSectionPermissions_WithRules(t *testing.T) {
 }
 
 func TestRenderSections(t *testing.T) {
-	ctx := &PromptContext{}
+	ctx := testCtx()
 	sections := []PromptSection{
 		func(_ *PromptContext) string { return "alpha" },
 		func(_ *PromptContext) string { return "" }, // skipped
@@ -154,7 +212,7 @@ func TestRenderSections(t *testing.T) {
 }
 
 func TestRenderSections_AllEmpty(t *testing.T) {
-	ctx := &PromptContext{}
+	ctx := testCtx()
 	sections := []PromptSection{
 		func(_ *PromptContext) string { return "" },
 	}
@@ -164,13 +222,13 @@ func TestRenderSections_AllEmpty(t *testing.T) {
 }
 
 func TestRenderSections_Nil(t *testing.T) {
-	if got := renderSections(nil, &PromptContext{}); got != "" {
+	if got := renderSections(nil, testCtx()); got != "" {
 		t.Errorf("nil sections should return empty string, got: %q", got)
 	}
 }
 
 func TestBuildSystemPrompt_Block1Structure(t *testing.T) {
-	blocks := BuildSystemPrompt("/test", nil, "")
+	blocks := BuildSystemPrompt(testCtx())
 	if len(blocks) < 1 {
 		t.Fatal("expected at least 1 block")
 	}
@@ -186,18 +244,16 @@ func TestBuildSystemPrompt_Block1Structure(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_NoProjectBlock(t *testing.T) {
-	// With no CLAUDE.md, no skills, nil settings → only Block 1
-	blocks := BuildSystemPrompt("/nonexistent", nil, "")
-	// Block 1 is always present; Block 2 may or may not be depending on
-	// whether LoadClaudeMD finds anything at the path. We just verify
-	// Block 1 exists and is well-formed.
+	ctx := &PromptContext{CWD: "/nonexistent", Model: api.ModelClaude46Opus}
+	blocks := BuildSystemPrompt(ctx)
 	if len(blocks) == 0 {
 		t.Fatal("expected at least 1 block")
 	}
 }
 
 func TestBuildSystemPrompt_WithSkills(t *testing.T) {
-	blocks := BuildSystemPrompt("/nonexistent", nil, "test skill")
+	ctx := &PromptContext{CWD: "/nonexistent", Model: api.ModelClaude46Opus, SkillContent: "test skill"}
+	blocks := BuildSystemPrompt(ctx)
 	if len(blocks) < 2 {
 		t.Fatal("expected 2 blocks with skill content")
 	}
@@ -212,7 +268,8 @@ func TestBuildSystemPrompt_WithPermissions(t *testing.T) {
 			{Tool: "Bash", Action: "allow"},
 		},
 	}
-	blocks := BuildSystemPrompt("/nonexistent", settings, "")
+	ctx := &PromptContext{CWD: "/nonexistent", Model: api.ModelClaude46Opus, Settings: settings}
+	blocks := BuildSystemPrompt(ctx)
 	if len(blocks) < 2 {
 		t.Fatal("expected 2 blocks with permissions")
 	}
@@ -227,11 +284,11 @@ func TestBuildSystemPrompt_MultipleProjectSections(t *testing.T) {
 			{Tool: "Read", Action: "allow"},
 		},
 	}
-	blocks := BuildSystemPrompt("/nonexistent", settings, "my skills")
+	ctx := &PromptContext{CWD: "/nonexistent", Model: api.ModelClaude46Opus, Settings: settings, SkillContent: "my skills"}
+	blocks := BuildSystemPrompt(ctx)
 	if len(blocks) < 2 {
 		t.Fatal("expected 2 blocks")
 	}
-	// Block 2 should have both skills and permissions, separated by \n\n
 	if !strings.Contains(blocks[1].Text, "Active Skills") {
 		t.Error("Block 2 should contain skills")
 	}
@@ -249,7 +306,7 @@ func TestRegisterCoreSection(t *testing.T) {
 		return "custom core"
 	})
 
-	blocks := BuildSystemPrompt("/test", nil, "")
+	blocks := BuildSystemPrompt(testCtx())
 	if !strings.Contains(blocks[0].Text, "custom core") {
 		t.Error("registered core section should appear in Block 1")
 	}
@@ -264,7 +321,8 @@ func TestRegisterProjectSection(t *testing.T) {
 		return "custom project"
 	})
 
-	blocks := BuildSystemPrompt("/nonexistent", nil, "")
+	ctx := &PromptContext{CWD: "/nonexistent", Model: api.ModelClaude46Opus}
+	blocks := BuildSystemPrompt(ctx)
 	found := false
 	for _, b := range blocks {
 		if strings.Contains(b.Text, "custom project") {
@@ -294,5 +352,23 @@ func TestFormatPermissionRules(t *testing.T) {
 func TestFormatPermissionRules_Empty(t *testing.T) {
 	if got := formatPermissionRules(nil); got != "" {
 		t.Errorf("nil rules should return empty, got: %q", got)
+	}
+}
+
+func TestModelKnowledgeCutoff(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{api.ModelClaude46Opus, "May 2025"},
+		{api.ModelClaude46Sonnet, "August 2025"},
+		{api.ModelClaude45Haiku, "February 2025"},
+		{"unknown-model", ""},
+	}
+	for _, tt := range tests {
+		got := modelKnowledgeCutoff(tt.model)
+		if got != tt.want {
+			t.Errorf("modelKnowledgeCutoff(%q) = %q, want %q", tt.model, got, tt.want)
+		}
 	}
 }

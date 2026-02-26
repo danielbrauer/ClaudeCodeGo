@@ -46,6 +46,7 @@ type Loop struct {
 	onTurnComplete func(history *History)
 	hooks          HookRunner // Phase 7: nil = no hooks
 	fastMode       bool       // when true, sends speed:"fast" on eligible models
+	contextMessage string     // <system-reminder> context prepended to messages
 }
 
 // LoopConfig configures the agentic loop.
@@ -59,6 +60,7 @@ type LoopConfig struct {
 	Compactor      *Compactor             // if non-nil, enables auto-compaction
 	OnTurnComplete func(history *History)  // called after each API round-trip
 	Hooks          HookRunner             // Phase 7: nil = no hooks
+	ContextMessage string                 // <system-reminder> context prepended to messages
 }
 
 // NewLoop creates a new agentic conversation loop.
@@ -77,6 +79,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		compactor:      cfg.Compactor,
 		onTurnComplete: cfg.OnTurnComplete,
 		hooks:          cfg.Hooks,
+		contextMessage: cfg.ContextMessage,
 	}
 }
 
@@ -169,6 +172,15 @@ func (l *Loop) SetOnTurnComplete(fn func(history *History)) {
 func (l *Loop) run(ctx context.Context) error {
 	for {
 		msgs := l.history.Messages()
+
+		// Prepend context message if configured (matching JS CLI's TN1 pattern).
+		// The context message is a user message containing <system-reminder>
+		// blocks with claudeMd, currentDate, and gitStatus.
+		if l.contextMessage != "" {
+			contextMsg := api.NewTextMessage(api.RoleUser, l.contextMessage)
+			msgs = append([]api.Message{contextMsg}, msgs...)
+		}
+
 		system := l.system
 		tools := l.tools
 

@@ -1,30 +1,49 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
+// ClaudeMDEntry represents a loaded CLAUDE.md file with its metadata.
+type ClaudeMDEntry struct {
+	Path    string // absolute path to the file
+	Type    string // "User", "Project", "Local", "Managed"
+	Content string // file content
+}
+
 // LoadClaudeMD loads and merges CLAUDE.md content from multiple locations.
-// It supports:
-//   - User-level: ~/.claude/CLAUDE.md
-//   - Directory walk from filesystem root to CWD
-//   - Project-level: .claude/CLAUDE.md
-//   - @path imports for including content from other files
-//   - .claude/rules/ directory for additional rule files
+// Returns a plain concatenation of all content (legacy behavior).
 func LoadClaudeMD(cwd string) string {
+	entries := LoadClaudeMDEntries(cwd)
+	if len(entries) == 0 {
+		return ""
+	}
 	var sections []string
+	for _, e := range entries {
+		sections = append(sections, e.Content)
+	}
+	return strings.Join(sections, "\n\n---\n\n")
+}
+
+// LoadClaudeMDEntries loads CLAUDE.md files with path and type annotations.
+// This is used for the context injection format matching the JS CLI.
+func LoadClaudeMDEntries(cwd string) []ClaudeMDEntry {
+	var entries []ClaudeMDEntry
 
 	// 1. User-level: ~/.claude/CLAUDE.md
 	if home, err := os.UserHomeDir(); err == nil {
-		if content := loadClaudeMDFile(filepath.Join(home, ".claude", "CLAUDE.md"), nil); content != "" {
-			sections = append(sections, content)
+		path := filepath.Join(home, ".claude", "CLAUDE.md")
+		if content := loadClaudeMDFile(path, nil); content != "" {
+			entries = append(entries, ClaudeMDEntry{Path: path, Type: "User", Content: content})
 		}
 		// User-level rules: ~/.claude/rules/
-		if rules := loadRulesDir(filepath.Join(home, ".claude", "rules")); rules != "" {
-			sections = append(sections, rules)
+		rulesDir := filepath.Join(home, ".claude", "rules")
+		if rules := loadRulesDir(rulesDir); rules != "" {
+			entries = append(entries, ClaudeMDEntry{Path: rulesDir, Type: "User", Content: rules})
 		}
 	}
 
@@ -32,22 +51,59 @@ func LoadClaudeMD(cwd string) string {
 	parts := strings.Split(filepath.Clean(cwd), string(filepath.Separator))
 	for i := 1; i <= len(parts); i++ {
 		dir := string(filepath.Separator) + filepath.Join(parts[1:i]...)
-		if content := loadClaudeMDFile(filepath.Join(dir, "CLAUDE.md"), nil); content != "" {
-			sections = append(sections, content)
+		path := filepath.Join(dir, "CLAUDE.md")
+		if content := loadClaudeMDFile(path, nil); content != "" {
+			entries = append(entries, ClaudeMDEntry{Path: path, Type: "Project", Content: content})
 		}
 	}
 
 	// 3. Project-level: .claude/CLAUDE.md
-	if content := loadClaudeMDFile(filepath.Join(cwd, ".claude", "CLAUDE.md"), nil); content != "" {
-		sections = append(sections, content)
+	path := filepath.Join(cwd, ".claude", "CLAUDE.md")
+	if content := loadClaudeMDFile(path, nil); content != "" {
+		entries = append(entries, ClaudeMDEntry{Path: path, Type: "Project", Content: content})
 	}
 
 	// 4. Project-level rules: .claude/rules/
-	if rules := loadRulesDir(filepath.Join(cwd, ".claude", "rules")); rules != "" {
-		sections = append(sections, rules)
+	rulesDir := filepath.Join(cwd, ".claude", "rules")
+	if rules := loadRulesDir(rulesDir); rules != "" {
+		entries = append(entries, ClaudeMDEntry{Path: rulesDir, Type: "Project", Content: rules})
 	}
 
-	return strings.Join(sections, "\n\n---\n\n")
+	return entries
+}
+
+// FormatClaudeMDForContext formats CLAUDE.md entries for injection into
+// the <system-reminder> context block, matching the JS CLI's ls7() format.
+func FormatClaudeMDForContext(entries []ClaudeMDEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, entry := range entries {
+		if entry.Content == "" {
+			continue
+		}
+		var annotation string
+		switch entry.Type {
+		case "Project":
+			annotation = " (project instructions, checked into the codebase)"
+		case "Local":
+			annotation = " (user's private project instructions, not checked in)"
+		case "User":
+			annotation = " (user's private global instructions for all projects)"
+		default:
+			annotation = ""
+		}
+		parts = append(parts, fmt.Sprintf("Contents of %s%s:\n\n%s", entry.Path, annotation, entry.Content))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	const preamble = "Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written."
+	return preamble + "\n\n" + strings.Join(parts, "\n\n")
 }
 
 // loadClaudeMDFile reads a CLAUDE.md file and resolves @path imports.
