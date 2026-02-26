@@ -172,7 +172,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// users can type ahead while the agent is working.
 	if m.mode == modeInput || m.mode == modeStreaming {
 		var cmd tea.Cmd
+		m.textInput.SetHeight(maxInputLines) // pre-expand so repositionView won't scroll
 		m.textInput, cmd = m.textInput.Update(msg)
+		updateTextInputHeight(&m)
 		cmds = append(cmds, cmd)
 	}
 

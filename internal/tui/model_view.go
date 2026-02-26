@@ -34,6 +34,7 @@ func (m model) View() string {
 	// Streaming text (during API response).
 	if m.streamingText != "" {
 		rendered := m.mdRenderer.render(m.streamingText)
+		rendered = capHeight(rendered, m.streamingCapLines())
 		b.WriteString(rendered)
 		b.WriteString("\n")
 	}
@@ -114,6 +115,30 @@ func (m model) View() string {
 	}
 
 	return b.String()
+}
+
+// streamingCapLines returns the maximum number of lines to display in the
+// streaming text area. It's half the terminal height, clamped to [8, 24].
+func (m model) streamingCapLines() int {
+	n := m.height / 2
+	if n < 8 {
+		n = 8
+	}
+	if n > 24 {
+		n = 24
+	}
+	return n
+}
+
+// capHeight limits rendered text to the last maxLines lines. If truncated,
+// a dim ellipsis indicator is prepended.
+func capHeight(rendered string, maxLines int) string {
+	lines := strings.Split(rendered, "\n")
+	if len(lines) <= maxLines {
+		return rendered
+	}
+	tail := lines[len(lines)-maxLines:]
+	return diffDimStyle.Render("...") + "\n" + strings.Join(tail, "\n")
 }
 
 // renderInputArea renders the input textarea with borders and hints.

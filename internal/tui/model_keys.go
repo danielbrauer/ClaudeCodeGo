@@ -54,6 +54,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.textInput.Reset()
+		updateTextInputHeight(&m)
 		m.ctrlCPending = true
 		return m, startCtrlCTimer()
 
@@ -63,6 +64,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(m.textInput.Value()) == "" && m.dynSuggestion != "" {
 			m.textInput.SetValue(m.dynSuggestion)
 			m.textInput.CursorEnd()
+			updateTextInputHeight(&m)
 			return m, nil
 		}
 		return m.handleTabComplete()
@@ -102,6 +104,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			text = m.dynSuggestion
 			m.dynSuggestion = ""
 			m.textInput.Reset()
+			updateTextInputHeight(&m)
 			return m.handleSubmit(text)
 		}
 		if text == "" {
@@ -109,6 +112,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.dynSuggestion = "" // clear suggestion on any submit
 		m.textInput.Reset()
+		updateTextInputHeight(&m)
 		return m.handleSubmit(text)
 
 	default:
@@ -123,7 +127,9 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		var cmd tea.Cmd
+		m.textInput.SetHeight(maxInputLines) // pre-expand so repositionView won't scroll
 		m.textInput, cmd = m.textInput.Update(msg)
+		updateTextInputHeight(&m)
 		// Clear completions when the user types — they'll re-trigger on Tab.
 		if len(m.completions) > 0 {
 			m.clearCompletions()
@@ -154,6 +160,7 @@ func (m model) handleStreamingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.textInput.Reset()
+		updateTextInputHeight(&m)
 
 		// Enqueue the message for processing after the current turn.
 		m.queue.Enqueue(text)
@@ -168,6 +175,7 @@ func (m model) handleStreamingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// or removes the last queued message if input is empty.
 		if strings.TrimSpace(m.textInput.Value()) != "" {
 			m.textInput.Reset()
+			updateTextInputHeight(&m)
 			return m, nil
 		}
 		if text, ok := m.queue.RemoveLast(); ok {
@@ -179,7 +187,9 @@ func (m model) handleStreamingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		// All other keys are forwarded to the textarea by the Update fallthrough.
 		var cmd tea.Cmd
+		m.textInput.SetHeight(maxInputLines) // pre-expand so repositionView won't scroll
 		m.textInput, cmd = m.textInput.Update(msg)
+		updateTextInputHeight(&m)
 		return m, cmd
 	}
 }

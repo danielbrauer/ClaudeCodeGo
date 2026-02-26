@@ -7,18 +7,31 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // newTextInput creates and configures the multi-line text input editor.
 func newTextInput(width int) textarea.Model {
 	ti := textarea.New()
 	ti.Placeholder = ""
-	ti.Prompt = promptStyle.Render("❯ ")
 	ti.CharLimit = 0 // no limit
-	ti.SetWidth(width)
-	ti.SetHeight(1)
 	ti.ShowLineNumbers = false
 	ti.FocusedStyle.CursorLine = lipgloss.NewStyle() // no cursor line highlight
+	ti.FocusedStyle.Prompt = promptStyle              // purple bold styling applied by textarea
+	ti.BlurredStyle.Prompt = promptStyle
+
+	// Use SetPromptFunc so only the first display line gets the chevron;
+	// continuation lines (hard newlines and soft wraps) get blank space.
+	// promptWidth=2 matches the visual width of "❯ ".
+	// SetWidth must be called AFTER SetPromptFunc (textarea docs requirement).
+	ti.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
+	ti.SetWidth(width)
+	ti.SetHeight(1)
 	ti.Focus()
 	return ti
 }
@@ -131,6 +144,35 @@ func pickGitFile(authorEmail string) string {
 		return "<filepath>"
 	}
 	return basenames[rand.Intn(len(basenames))]
+}
+
+// maxInputLines is the upper bound for auto-expanding the text input height.
+const maxInputLines = 10
+
+// updateTextInputHeight adjusts the textarea height to match the visual line
+// count (accounting for both hard newlines and word wrapping), clamped to
+// [1, maxInputLines].
+func updateTextInputHeight(m *model) {
+	val := m.textInput.Value()
+	if val == "" {
+		m.textInput.SetHeight(1)
+		return
+	}
+
+	// Width() already subtracts prompt width internally, so use it directly.
+	textWidth := m.textInput.Width()
+	if textWidth < 1 {
+		textWidth = 1
+	}
+
+	// Use the same wrapping the textarea uses: word wrap then hard wrap.
+	wrapped := ansi.Hardwrap(ansi.Wordwrap(val, textWidth, ""), textWidth, true)
+	visual := strings.Count(wrapped, "\n") + 1
+
+	if visual > maxInputLines {
+		visual = maxInputLines
+	}
+	m.textInput.SetHeight(visual)
 }
 
 // renderInputBorder renders a full-width horizontal line in the prompt border color.
