@@ -280,10 +280,16 @@ func (p *TokenProvider) GetAccessToken(ctx context.Context) (string, error) {
 		p.cached = tokens
 	}
 
-	// Check if token needs refresh (refresh if <5 minutes until expiry).
+	// Proactively refresh if <5 minutes until expiry. If refresh fails but
+	// the token hasn't truly expired yet, keep using it rather than forcing
+	// re-authentication (the JS CLI does the same via its staged refresh).
 	if p.needsRefresh() {
 		if err := p.refresh(ctx); err != nil {
-			return "", fmt.Errorf("refreshing token: %w", err)
+			tokenExpired := p.cached.ExpiresAt > 0 && time.Now().UnixMilli() > p.cached.ExpiresAt
+			if tokenExpired {
+				return "", fmt.Errorf("refreshing token: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Warning: proactive token refresh failed, using existing token: %v\n", err)
 		}
 	}
 
