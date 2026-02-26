@@ -39,17 +39,16 @@ func envBool(key string) bool {
 }
 
 // WithSystemPromptCaching returns a copy of the system blocks with
-// cache_control added to each block. This creates cache breakpoints
-// so the system prompt is read from cache on subsequent turns.
+// cache_control added to the last block. This caches the entire system
+// prompt as a prefix, matching the API's 4-block cache_control limit
+// (1 system + 1 tools + 2 messages = 4).
 func WithSystemPromptCaching(blocks []api.SystemBlock) []api.SystemBlock {
 	if len(blocks) == 0 {
 		return blocks
 	}
 	out := make([]api.SystemBlock, len(blocks))
 	copy(out, blocks)
-	for i := range out {
-		out[i].CacheControl = ephemeralCache
-	}
+	out[len(out)-1].CacheControl = ephemeralCache
 	return out
 }
 

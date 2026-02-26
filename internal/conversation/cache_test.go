@@ -105,14 +105,17 @@ func TestWithSystemPromptCaching_AddsControl(t *testing.T) {
 		}
 	}
 
-	// Result should have cache_control on all blocks.
+	// Result should have cache_control only on the last block.
 	if len(result) != 2 {
 		t.Fatalf("len(result) = %d, want 2", len(result))
 	}
+	if result[0].CacheControl != nil {
+		t.Errorf("result[0].CacheControl should be nil (not last block)")
+	}
+	if result[1].CacheControl == nil || result[1].CacheControl.Type != "ephemeral" {
+		t.Errorf("result[1].CacheControl = %v, want ephemeral", result[1].CacheControl)
+	}
 	for i, b := range result {
-		if b.CacheControl == nil || b.CacheControl.Type != "ephemeral" {
-			t.Errorf("result[%d].CacheControl = %v, want ephemeral", i, b.CacheControl)
-		}
 		if b.Text != blocks[i].Text {
 			t.Errorf("result[%d].Text = %q, want %q", i, b.Text, blocks[i].Text)
 		}
