@@ -151,9 +151,6 @@ func (c *Client) CreateMessageStream(
 	// Collect conditional beta headers needed for this request.
 	extraBetas := c.collectBetas(req)
 
-	// Mirror betas in the request body (JS sends both header and body).
-	req.Betas = extraBetas
-
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)

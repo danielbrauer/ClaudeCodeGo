@@ -111,7 +111,7 @@ type CreateMessageRequest struct {
 	TopP       *float64          `json:"top_p,omitempty"`
 	TopK       *int              `json:"top_k,omitempty"`
 	Speed      string            `json:"speed,omitempty"`
-	Betas      []string          `json:"betas,omitempty"`
+	Betas      []string          `json:"-"`
 	Thinking   *ThinkingConfig   `json:"thinking,omitempty"`
 	ToolChoice *ToolChoice       `json:"tool_choice,omitempty"`
 }
