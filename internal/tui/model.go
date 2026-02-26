@@ -171,7 +171,7 @@ func newModel(cfg ModelConfig) model {
 		slash.registerSkills(cfg.Skills)
 	}
 
-	return model{
+	m := model{
 		loop:             cfg.Loop,
 		ctx:              cfg.Ctx,
 		cancelFn:         cfg.CancelFn,
@@ -194,6 +194,8 @@ func newModel(cfg ModelConfig) model {
 		fastMode:         cfg.FastMode,
 		promptSuggestion: generatePromptSuggestion(),
 	}
+	m.tokens.setModel(cfg.ModelName)
+	return m
 }
 
 // applyFastMode synchronizes fast mode state across the model, settings,

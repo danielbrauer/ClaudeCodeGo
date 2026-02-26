@@ -61,6 +61,12 @@ func newSlashRegistry() *slashRegistry {
 	registerInitCommand(r)
 	registerReviewCommand(r)
 	registerExitCommands(r)
+	registerDoctorCommand(r)
+	registerThemeCommand(r)
+	registerVimCommand(r)
+	registerPermissionsCommand(r)
+	registerHooksCommand(r)
+	registerStatusCommand(r)
 
 	return r
 }

@@ -156,7 +156,7 @@ func (m model) buildStatusLineData() statusLineData {
 		Version:     m.version,
 		OutputStyle: statusLineStyle{Name: "default"},
 		Cost: statusLineCost{
-			TotalCostUSD: 0, // cost tracking not yet implemented
+			TotalCostUSD: m.tokens.TotalCostUSD,
 		},
 		ContextWindow: statusLineContext{
 			TotalInputTokens:  m.tokens.TotalInputTokens,

@@ -39,6 +39,7 @@ func (m model) handleModelCommand(parts []string) (tea.Model, tea.Cmd) {
 func (m model) switchModel(newModel string, cmds []tea.Cmd) (tea.Model, tea.Cmd) {
 	m.loop.SetModel(newModel)
 	m.modelName = newModel
+	m.tokens.setModel(newModel)
 
 	if m.onModelSwitch != nil {
 		m.onModelSwitch(newModel)
