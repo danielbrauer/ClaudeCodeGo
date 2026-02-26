@@ -48,6 +48,9 @@ func init() {
 	registerSubcommand(subcommand{Name: "login", Run: func(args []string) { runLogin(args) }})
 	registerSubcommand(subcommand{Name: "logout", Run: func(args []string) { runLogout() }})
 	registerSubcommand(subcommand{Name: "status", Run: func(args []string) { runStatus(args) }})
+	registerSubcommand(subcommand{Name: "update", Run: func(args []string) { runUpdate(args) }})
+	registerSubcommand(subcommand{Name: "mcp", Run: func(args []string) { runMCP(args) }})
+	registerSubcommand(subcommand{Name: "agents", Run: func(args []string) { runAgents() }})
 }
 
 // dispatchSubcommand checks os.Args for a registered subcommand and runs it.
@@ -735,6 +738,88 @@ func doLogin(ctx context.Context, store *auth.CredentialStore, opts auth.LoginOp
 
 func doLogout(store *auth.CredentialStore) error {
 	return store.Delete()
+}
+
+// runUpdate handles the `claude update` subcommand.
+// Since this is a Go binary, we point users to the package manager or release page.
+func runUpdate(args []string) {
+	fmt.Println("Claude Code (Go)")
+	fmt.Printf("Current version: %s\n\n", version)
+	fmt.Println("To update, download the latest release from the project repository")
+	fmt.Println("or use your package manager to update the binary.")
+	fmt.Println()
+	fmt.Println("If installed via go install:")
+	fmt.Println("  go install github.com/anthropics/claude-code-go/cmd/claude@latest")
+}
+
+// runMCP handles the `claude mcp` subcommand for MCP server management.
+func runMCP(args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: claude mcp <command> [options]")
+		fmt.Println()
+		fmt.Println("Commands:")
+		fmt.Println("  list              List configured MCP servers")
+		fmt.Println("  add <name> <cmd>  Add an MCP server")
+		fmt.Println("  remove <name>     Remove an MCP server")
+		return
+	}
+
+	cwd, _ := os.Getwd()
+
+	switch args[0] {
+	case "list":
+		mcpCfg, err := mcp.LoadMCPConfig(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading MCP config: %v\n", err)
+			os.Exit(1)
+		}
+		if mcpCfg == nil || len(mcpCfg.MCPServers) == 0 {
+			fmt.Println("No MCP servers configured.")
+			return
+		}
+		fmt.Println("Configured MCP servers:")
+		for name, cfg := range mcpCfg.MCPServers {
+			fmt.Printf("  %s: %s %v\n", name, cfg.Command, cfg.Args)
+		}
+
+	case "add":
+		if len(args) < 3 {
+			fmt.Println("Usage: claude mcp add <name> <command> [args...]")
+			os.Exit(1)
+		}
+		name := args[1]
+		command := args[2]
+		cmdArgs := args[3:]
+		if err := mcp.AddServerToConfig(cwd, name, command, cmdArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "Error adding MCP server: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Added MCP server: %s\n", name)
+
+	case "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: claude mcp remove <name>")
+			os.Exit(1)
+		}
+		name := args[1]
+		if err := mcp.RemoveServerFromConfig(cwd, name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error removing MCP server: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Removed MCP server: %s\n", name)
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown mcp command: %s\n", args[0])
+		os.Exit(1)
+	}
+}
+
+// runAgents handles the `claude agents` subcommand.
+func runAgents() {
+	fmt.Println("Configured agents:")
+	fmt.Println("  (No custom agents configured)")
+	fmt.Println()
+	fmt.Println("Agents can be configured in .claude/settings.json")
 }
 
 // showBypassPermissionsWarning displays a warning dialog for bypass permissions mode.

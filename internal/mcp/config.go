@@ -55,3 +55,47 @@ func loadMCPFile(path string) (*MCPConfig, error) {
 
 	return &cfg, nil
 }
+
+// AddServerToConfig adds an MCP server to the project-level .mcp.json file.
+func AddServerToConfig(cwd, name, command string, args []string) error {
+	path := filepath.Join(cwd, ".mcp.json")
+	cfg, err := loadMCPFile(path)
+	if err != nil {
+		cfg = &MCPConfig{MCPServers: make(map[string]ServerConfig)}
+	}
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = make(map[string]ServerConfig)
+	}
+
+	cfg.MCPServers[name] = ServerConfig{
+		Command: command,
+		Args:    args,
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+// RemoveServerFromConfig removes an MCP server from the project-level .mcp.json file.
+func RemoveServerFromConfig(cwd, name string) error {
+	path := filepath.Join(cwd, ".mcp.json")
+	cfg, err := loadMCPFile(path)
+	if err != nil {
+		return fmt.Errorf("no .mcp.json found")
+	}
+
+	if _, ok := cfg.MCPServers[name]; !ok {
+		return fmt.Errorf("server %q not found in config", name)
+	}
+
+	delete(cfg.MCPServers, name)
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
+}
