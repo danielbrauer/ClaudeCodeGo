@@ -20,6 +20,7 @@ type PromptContext struct {
 	SkillContent string
 	AgentMode    bool   // toggle agent-specific sections
 	Version      string // CLI version for attribution
+	GitStatus    string // git status snapshot (appended to system prompt via owq pattern)
 }
 
 // PromptSection generates a portion of the system prompt.
@@ -65,7 +66,8 @@ func RegisterProjectSection(s PromptSection) {
 // Note: CLAUDE.md content and date are injected via user message context
 // (see BuildContextMessage), NOT in the system prompt. This matches the
 // JS CLI's pattern where claudeMd and currentDate are in <system-reminder>
-// blocks in user messages.
+// blocks in user messages. However, gitStatus is appended to the system
+// prompt (matching JS owq() function).
 func BuildSystemPrompt(ctx *PromptContext) []api.SystemBlock {
 	var blocks []api.SystemBlock
 
@@ -75,6 +77,12 @@ func BuildSystemPrompt(ctx *PromptContext) []api.SystemBlock {
 
 	if projectText := renderSections(projectSections, ctx); projectText != "" {
 		blocks = append(blocks, api.SystemBlock{Type: "text", Text: projectText})
+	}
+
+	// Append systemContext (gitStatus) matching the JS CLI's owq() pattern.
+	// owq() appends "key: value" entries from systemContext to the system prompt array.
+	if ctx.GitStatus != "" {
+		blocks = append(blocks, api.SystemBlock{Type: "text", Text: "gitStatus: " + ctx.GitStatus})
 	}
 
 	return blocks

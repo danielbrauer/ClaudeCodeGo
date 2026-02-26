@@ -355,6 +355,33 @@ func TestFormatPermissionRules_Empty(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPrompt_WithGitStatus(t *testing.T) {
+	ctx := &PromptContext{
+		CWD:       "/test",
+		Model:     api.ModelClaude46Opus,
+		GitStatus: "Current branch: main\n\nStatus:\n(clean)",
+	}
+	blocks := BuildSystemPrompt(ctx)
+	// Last block should be the gitStatus block (matching JS owq() pattern).
+	lastBlock := blocks[len(blocks)-1]
+	if !strings.HasPrefix(lastBlock.Text, "gitStatus: ") {
+		t.Errorf("last block should start with 'gitStatus: ', got: %q", lastBlock.Text[:50])
+	}
+	if !strings.Contains(lastBlock.Text, "Current branch: main") {
+		t.Error("gitStatus block should contain git status content")
+	}
+}
+
+func TestBuildSystemPrompt_NoGitStatus(t *testing.T) {
+	ctx := testCtx() // no GitStatus set
+	blocks := BuildSystemPrompt(ctx)
+	for _, b := range blocks {
+		if strings.HasPrefix(b.Text, "gitStatus: ") {
+			t.Error("should not have gitStatus block when GitStatus is empty")
+		}
+	}
+}
+
 func TestModelKnowledgeCutoff(t *testing.T) {
 	tests := []struct {
 		model string

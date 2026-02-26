@@ -188,24 +188,26 @@ func main() {
 		api.WithVersion(version),
 	)
 
-	// Build system prompt with settings context and skill content.
+	// Collect context for system prompt and user message injection.
+	claudeMDEntries := config.LoadClaudeMDEntries(cwd)
+	claudeMDFormatted := config.FormatClaudeMDForContext(claudeMDEntries)
+	gitStatus := conversation.CollectGitStatus(cwd)
+
+	// Build system prompt with settings context, skill content, and git status.
+	// Git status is appended to the system prompt (matching JS owq() pattern).
 	system := conversation.BuildSystemPrompt(&conversation.PromptContext{
 		CWD:          cwd,
 		Model:        model,
 		Settings:     settings,
 		SkillContent: skillContent,
 		Version:      version,
+		GitStatus:    gitStatus,
 	})
 
-	// Collect context for injection into user messages (matching JS CLI pattern).
-	// This includes CLAUDE.md, current date, and git status.
-	claudeMDEntries := config.LoadClaudeMDEntries(cwd)
-	claudeMDFormatted := config.FormatClaudeMDForContext(claudeMDEntries)
-	gitStatus := conversation.CollectGitStatus(cwd)
+	// CLAUDE.md and date are injected as user message context (matching JS TN1 pattern).
 	userContext := conversation.UserContext{
 		ClaudeMD:    claudeMDFormatted,
 		CurrentDate: conversation.FormatCurrentDate(),
-		GitStatus:   gitStatus,
 	}
 	contextMessage := conversation.BuildContextMessage(userContext)
 

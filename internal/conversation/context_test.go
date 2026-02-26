@@ -45,24 +45,10 @@ func TestBuildContextMessage_WithCurrentDate(t *testing.T) {
 	}
 }
 
-func TestBuildContextMessage_WithGitStatus(t *testing.T) {
-	ctx := UserContext{
-		GitStatus: "Current branch: main\n\nStatus:\n(clean)",
-	}
-	got := BuildContextMessage(ctx)
-	if !strings.Contains(got, "# gitStatus") {
-		t.Error("should contain gitStatus section header")
-	}
-	if !strings.Contains(got, "Current branch: main") {
-		t.Error("should contain git status content")
-	}
-}
-
 func TestBuildContextMessage_AllFields(t *testing.T) {
 	ctx := UserContext{
 		ClaudeMD:    "# Project\nSome instructions",
 		CurrentDate: "Today's date is 2026-02-26.",
-		GitStatus:   "Current branch: feat-x\n\nStatus:\n(clean)",
 	}
 	got := BuildContextMessage(ctx)
 
@@ -74,15 +60,19 @@ func TestBuildContextMessage_AllFields(t *testing.T) {
 		t.Error("should contain closing </system-reminder>")
 	}
 
-	// Check section ordering: claudeMd, currentDate, gitStatus.
+	// Check section ordering: claudeMd, currentDate.
 	claudeIdx := strings.Index(got, "# claudeMd")
 	dateIdx := strings.Index(got, "# currentDate")
-	gitIdx := strings.Index(got, "# gitStatus")
-	if claudeIdx == -1 || dateIdx == -1 || gitIdx == -1 {
+	if claudeIdx == -1 || dateIdx == -1 {
 		t.Fatal("all sections should be present")
 	}
-	if claudeIdx >= dateIdx || dateIdx >= gitIdx {
-		t.Error("sections should appear in order: claudeMd, currentDate, gitStatus")
+	if claudeIdx >= dateIdx {
+		t.Error("sections should appear in order: claudeMd, currentDate")
+	}
+
+	// gitStatus should NOT be in the context message (it goes in system prompt).
+	if strings.Contains(got, "gitStatus") {
+		t.Error("gitStatus should not be in context message (goes in system prompt)")
 	}
 }
 

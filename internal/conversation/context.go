@@ -9,10 +9,10 @@ import (
 
 // UserContext holds context data that gets injected into user messages
 // as <system-reminder> blocks, matching the JS CLI's TN1() pattern.
+// Note: gitStatus goes into the system prompt (via owq()), not here.
 type UserContext struct {
 	ClaudeMD    string // formatted CLAUDE.md content with path annotations
 	CurrentDate string // "Today's date is YYYY-MM-DD."
-	GitStatus   string // git status snapshot
 }
 
 // CollectGitStatus gathers git status information for the working directory.
@@ -79,9 +79,6 @@ func BuildContextMessage(ctx UserContext) string {
 	if ctx.CurrentDate != "" {
 		entries["currentDate"] = ctx.CurrentDate
 	}
-	if ctx.GitStatus != "" {
-		entries["gitStatus"] = ctx.GitStatus
-	}
 
 	if len(entries) == 0 {
 		return ""
@@ -89,7 +86,7 @@ func BuildContextMessage(ctx UserContext) string {
 
 	var sections []string
 	// Emit in a stable order matching JS CLI.
-	for _, key := range []string{"claudeMd", "currentDate", "gitStatus"} {
+	for _, key := range []string{"claudeMd", "currentDate"} {
 		if val, ok := entries[key]; ok {
 			sections = append(sections, fmt.Sprintf("# %s\n%s", key, val))
 		}
