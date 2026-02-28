@@ -199,7 +199,10 @@ func (f *OAuthFlow) Login(ctx context.Context, opts ...LoginOptions) (*LoginResu
 	}
 
 	// Start local callback server.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Listen on "localhost" to match the redirect_uri (http://localhost:PORT/callback)
+	// sent to the OAuth provider. Using "127.0.0.1" can fail on systems where the
+	// browser resolves "localhost" to ::1 (IPv6) instead of 127.0.0.1.
+	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		return nil, fmt.Errorf("starting callback server: %w", err)
 	}
@@ -250,16 +253,46 @@ func (f *OAuthFlow) Login(ctx context.Context, opts ...LoginOptions) (*LoginResu
 	fmt.Printf("\nIf the browser doesn't open, visit this URL on this machine:\n%s\n\n", autoAuthURL)
 	fmt.Printf("Or visit this URL on another device and paste the code below:\n%s\n\n", manualAuthURL)
 
-	// Start goroutine to read manual code entry from stdin.
+	// Start goroutine to read manual code entry.
+	// Open /dev/tty directly so we can close it to cancel the blocked read
+	// when the browser callback fires (preventing a goroutine leak that would
+	// interfere with the TUI's stdin reading).
 	manualCodeCh := make(chan string, 1)
-	go func() {
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-			text := strings.TrimSpace(scanner.Text())
-			if text != "" {
-				manualCodeCh <- text
-				return
+	var ttyFile *os.File
+	if runtime.GOOS != "windows" {
+		if tty, err := os.Open("/dev/tty"); err == nil {
+			ttyFile = tty
+			go func() {
+				scanner := bufio.NewScanner(tty)
+				for scanner.Scan() {
+					text := strings.TrimSpace(scanner.Text())
+					if text != "" {
+						manualCodeCh <- text
+						return
+					}
+				}
+			}()
+		}
+	}
+	if ttyFile == nil {
+		// Fallback for Windows or when /dev/tty is unavailable.
+		go func() {
+			scanner := bufio.NewScanner(os.Stdin)
+			for scanner.Scan() {
+				text := strings.TrimSpace(scanner.Text())
+				if text != "" {
+					manualCodeCh <- text
+					return
+				}
 			}
+		}()
+	}
+	// Close /dev/tty on exit to unblock the reader goroutine. This must happen
+	// before Login returns so the goroutine doesn't hold the terminal fd open
+	// and interfere with the TUI's stdin reading.
+	defer func() {
+		if ttyFile != nil {
+			ttyFile.Close()
 		}
 	}()
 
@@ -269,6 +302,7 @@ func (f *OAuthFlow) Login(ctx context.Context, opts ...LoginOptions) (*LoginResu
 	select {
 	case code = <-codeCh:
 		// Browser callback succeeded.
+		fmt.Println("Login callback received, completing authentication...")
 	case code = <-manualCodeCh:
 		isManual = true
 	case err := <-errCh:

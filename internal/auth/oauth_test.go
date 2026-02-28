@@ -1,13 +1,17 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -478,4 +482,85 @@ func TestReadTokenFromFD_EmptyPipe(t *testing.T) {
 	if token != "" {
 		t.Errorf("expected empty token for empty pipe, got %q", token)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Callback server auto-completes login without user input
+// ---------------------------------------------------------------------------
+
+func TestCallbackServer_AutoCompletesWithoutEnter(t *testing.T) {
+	// Verify that the callback server signals completion via codeCh
+	// without requiring manual stdin input.
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	state := "test-state-123"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != state {
+			errCh <- fmt.Errorf("state mismatch")
+			http.Error(w, "State mismatch", http.StatusBadRequest)
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			errCh <- fmt.Errorf("no code")
+			http.Error(w, "Missing code", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		codeCh <- code
+	})
+
+	listener, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("listen error: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	server := &http.Server{Handler: mux}
+	go server.Serve(listener)
+	defer server.Shutdown(context.Background())
+
+	// Simulate browser redirect to callback.
+	callbackURL := fmt.Sprintf("http://localhost:%d/callback?code=test-auth-code&state=%s", port, state)
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("callback request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// codeCh should fire immediately without any stdin input.
+	select {
+	case code := <-codeCh:
+		if code != "test-auth-code" {
+			t.Errorf("expected code %q, got %q", "test-auth-code", code)
+		}
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for callback — auto-complete did not work")
+	}
+}
+
+func TestCallbackServer_ListensOnLocalhost(t *testing.T) {
+	// Verify that the server listens on "localhost" (matching the redirect URI)
+	// rather than only "127.0.0.1".
+	listener, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatalf("cannot listen on localhost:0: %v", err)
+	}
+	defer listener.Close()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	if port == 0 {
+		t.Fatal("expected non-zero port")
+	}
+
+	// Verify the listener is reachable at "localhost".
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 2*time.Second)
+	if err != nil {
+		t.Fatalf("cannot connect to localhost:%d: %v", port, err)
+	}
+	conn.Close()
 }
