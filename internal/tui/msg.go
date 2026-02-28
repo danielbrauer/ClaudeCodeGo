@@ -8,9 +8,10 @@ import (
 	"github.com/anthropics/claude-code-go/internal/config"
 )
 
-// MessageStartMsg carries token usage from the start of an API response.
+// MessageStartMsg carries token usage and model info from the start of an API response.
 type MessageStartMsg struct {
 	Usage api.Usage
+	Model string // full model ID returned by the API (e.g. "claude-sonnet-4-20250514")
 }
 
 // TextDeltaMsg carries incremental text from the API stream.

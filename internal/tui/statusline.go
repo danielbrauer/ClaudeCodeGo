@@ -137,6 +137,13 @@ func (m model) buildStatusLineData() statusLineData {
 		displayName = dn
 	}
 
+	// Use the full model ID from the API response (includes version date)
+	// when available; fall back to the configured model name.
+	modelID := m.modelName
+	if m.resolvedModelID != "" {
+		modelID = m.resolvedModelID
+	}
+
 	sessionID := ""
 	if m.session != nil {
 		sessionID = m.session.ID
@@ -146,7 +153,7 @@ func (m model) buildStatusLineData() statusLineData {
 		Cwd:       cwd,
 		SessionID: sessionID,
 		Model: statusLineModel{
-			ID:          m.modelName,
+			ID:          modelID,
 			DisplayName: displayName,
 		},
 		Workspace: statusLineWorkspace{

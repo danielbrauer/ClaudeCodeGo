@@ -35,8 +35,9 @@ type model struct {
 	loop      *conversation.Loop
 	ctx       context.Context
 	cancelFn  context.CancelFunc
-	modelName string
-	version   string
+	modelName       string
+	resolvedModelID string // full model ID from API response (e.g. "claude-sonnet-4-20250514")
+	version         string
 	mcpStatus MCPStatus   // MCP manager for /mcp command; may be nil
 	apiClient *api.Client // API client for model switching
 

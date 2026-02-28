@@ -462,6 +462,27 @@ func TestStatusLineCmd_TildeExpansion(t *testing.T) {
 	}
 }
 
+// TestBuildStatusLineData_ResolvedModelID verifies that the full model ID from
+// the API response is used in the status line data when available.
+func TestBuildStatusLineData_ResolvedModelID(t *testing.T) {
+	// Without resolvedModelID, should use modelName.
+	m := model{modelName: "claude-sonnet-4-6"}
+	data := m.buildStatusLineData()
+	if data.Model.ID != "claude-sonnet-4-6" {
+		t.Errorf("without resolvedModelID: model.id = %q, want %q", data.Model.ID, "claude-sonnet-4-6")
+	}
+
+	// With resolvedModelID, should use the full versioned ID.
+	m.resolvedModelID = "claude-sonnet-4-20250514"
+	data = m.buildStatusLineData()
+	if data.Model.ID != "claude-sonnet-4-20250514" {
+		t.Errorf("with resolvedModelID: model.id = %q, want %q", data.Model.ID, "claude-sonnet-4-20250514")
+	}
+	if data.Model.DisplayName != "Sonnet" {
+		t.Errorf("display_name = %q, want %q", data.Model.DisplayName, "Sonnet")
+	}
+}
+
 // TestStatusLineCmd_NullUsedPercentage verifies correct behavior when
 // used_percentage is nil (early in session before first API call).
 func TestStatusLineCmd_NullUsedPercentage(t *testing.T) {

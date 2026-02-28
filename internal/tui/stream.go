@@ -25,7 +25,7 @@ func NewTUIStreamHandler(p *tea.Program) *TUIStreamHandler {
 }
 
 func (h *TUIStreamHandler) OnMessageStart(msg api.MessageResponse) {
-	h.program.Send(MessageStartMsg{Usage: msg.Usage})
+	h.program.Send(MessageStartMsg{Usage: msg.Usage, Model: msg.Model})
 }
 
 func (h *TUIStreamHandler) OnContentBlockStart(index int, block api.ContentBlock) {

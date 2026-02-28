@@ -51,6 +51,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MessageStartMsg:
 		m.tokens.addInput(msg.Usage.InputTokens,
 			msg.Usage.CacheReadInputTokens, msg.Usage.CacheCreationInputTokens)
+		if msg.Model != "" {
+			m.resolvedModelID = msg.Model
+		}
 		return m, nil
 
 	case ContentBlockStartMsg:
