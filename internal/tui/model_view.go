@@ -180,16 +180,16 @@ func (m model) renderInputArea() string {
 	b.WriteString(renderInputBorder(m.width))
 	b.WriteString("\n")
 
-	// Hints line: show suggestion accept hint when a dynamic suggestion
-	// is visible, otherwise show "? for shortcuts" only when input is empty.
+	// Hints line: always render a hints line so the view height stays stable.
+	// Changing the line count between frames causes the Bubble Tea inline
+	// renderer to reposition incorrectly, making typed characters invisible.
 	if m.mode == modeInput && len(m.completions) == 0 {
 		if m.dynSuggestion != "" && m.textInput.Value() == "" {
 			b.WriteString("  " + shortcutsHintStyle.Render("enter to send, tab to edit, esc to dismiss"))
-			b.WriteString("\n")
 		} else if strings.TrimSpace(m.textInput.Value()) == "" {
 			b.WriteString("  " + shortcutsHintStyle.Render("? for shortcuts"))
-			b.WriteString("\n")
 		}
+		b.WriteString("\n")
 	} else if m.mode == modeStreaming {
 		hint := "esc to interrupt · enter to queue"
 		if m.queue.Len() > 0 {

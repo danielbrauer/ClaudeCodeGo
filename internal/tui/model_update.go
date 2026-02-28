@@ -33,10 +33,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Terminal resize ──
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.textInput.SetWidth(msg.Width)
-		m.mdRenderer.updateWidth(msg.Width)
+		// Guard against zero/negative dimensions that can arrive from
+		// pseudo-terminals or piped output; keep the previous values.
+		if msg.Width > 0 {
+			m.width = msg.Width
+			m.textInput.SetWidth(msg.Width)
+			m.mdRenderer.updateWidth(msg.Width)
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
 		return m, nil
 
 	// ── Key events ──
@@ -170,14 +176,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Pass other messages to the text input.
-	// During both modeInput and modeStreaming, forward to the textarea so
-	// users can type ahead while the agent is working.
+	// Pass other messages (cursor blink, etc.) to the text input.
+	// Only forward to the textarea — don't manipulate height here since
+	// these messages don't change content. Height adjustment is only
+	// needed after key input (handled in handleInputKey/handleStreamingKey).
 	if m.mode == modeInput || m.mode == modeStreaming {
 		var cmd tea.Cmd
-		m.textInput.SetHeight(maxInputLines) // pre-expand so repositionView won't scroll
 		m.textInput, cmd = m.textInput.Update(msg)
-		updateTextInputHeight(&m)
 		cmds = append(cmds, cmd)
 	}
 
