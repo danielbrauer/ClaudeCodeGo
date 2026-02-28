@@ -125,24 +125,14 @@ func (m model) buildStatusLineData() statusLineData {
 		usedPct = &pct
 	}
 
-	displayName := m.modelName
-	// Use the api package's display name if available, but avoid an import
-	// cycle by using a simple map here for common models.
-	nameMap := map[string]string{
-		"claude-opus-4-6":    "Opus",
-		"claude-sonnet-4-6":  "Sonnet",
-		"claude-haiku-3-5":   "Haiku",
-	}
-	if dn, ok := nameMap[m.modelName]; ok {
-		displayName = dn
-	}
-
 	// Use the full model ID from the API response (includes version date)
 	// when available; fall back to the configured model name.
 	modelID := m.modelName
 	if m.resolvedModelID != "" {
 		modelID = m.resolvedModelID
 	}
+
+	displayName := modelID
 
 	sessionID := ""
 	if m.session != nil {

@@ -19,7 +19,7 @@ func sampleStatusLineData() statusLineData {
 		SessionID: "test-session-123",
 		Model: statusLineModel{
 			ID:          "claude-opus-4-6",
-			DisplayName: "Opus",
+			DisplayName: "claude-opus-4-6",
 		},
 		Workspace: statusLineWorkspace{
 			CurrentDir: "/home/user/my-project",
@@ -92,8 +92,8 @@ func TestStatusLineCmd_ReadsStdinJSON(t *testing.T) {
 		Command: `cat | python3 -c "import sys, json; d=json.load(sys.stdin); print(d['model']['display_name'])"`,
 	}
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 5*time.Second)
-	if result != "Opus" {
-		t.Errorf("expected 'Opus', got %q", result)
+	if result != "claude-opus-4-6" {
+		t.Errorf("expected 'claude-opus-4-6', got %q", result)
 	}
 }
 
@@ -148,13 +148,13 @@ echo "[$MODEL] $BAR $PCT%"
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
 
 	// Should contain model name and percentage.
-	if !strings.Contains(result, "Opus") {
-		t.Errorf("expected output to contain 'Opus', got %q", result)
+	if !strings.Contains(result, "claude-opus-4-6") {
+		t.Errorf("expected output to contain 'claude-opus-4-6', got %q", result)
 	}
 	if !strings.Contains(result, "25%") {
 		t.Errorf("expected output to contain '25%%', got %q", result)
 	}
-	if !strings.Contains(result, "[Opus]") {
+	if !strings.Contains(result, "[claude-opus-4-6]") {
 		t.Errorf("expected output to contain '[Opus]', got %q", result)
 	}
 }
@@ -181,7 +181,7 @@ echo "[$MODEL] $COST_FMT | ${MINS}m ${SECS}s"
 	cfg := &config.StatusLineConfig{Type: "command", Command: script}
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
 
-	if !strings.Contains(result, "[Opus]") {
+	if !strings.Contains(result, "[claude-opus-4-6]") {
 		t.Errorf("expected '[Opus]', got %q", result)
 	}
 	if !strings.Contains(result, "$0.01") {
@@ -215,7 +215,7 @@ echo "$PCT% context used"
 	if len(lines) != 2 {
 		t.Errorf("expected 2 lines, got %d: %q", len(lines), result)
 	}
-	if !strings.Contains(lines[0], "[Opus]") {
+	if !strings.Contains(lines[0], "[claude-opus-4-6]") {
 		t.Errorf("line 1 should contain '[Opus]', got %q", lines[0])
 	}
 	if !strings.Contains(lines[0], "my-project") {
@@ -235,8 +235,8 @@ func TestStatusLineCmd_InlineJqStyle(t *testing.T) {
 		Command: `python3 -c "import sys,json; d=json.load(sys.stdin); print('[%s] %d%% context' % (d['model']['display_name'], int(d['context_window']['used_percentage'] or 0)))"`,
 	}
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
-	if result != "[Opus] 25% context" {
-		t.Errorf("expected '[Opus] 25%% context', got %q", result)
+	if result != "[claude-opus-4-6] 25% context" {
+		t.Errorf("expected '[claude-opus-4-6] 25%% context', got %q", result)
 	}
 }
 
@@ -262,7 +262,7 @@ fi
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
 
 	// Should at minimum contain model and directory.
-	if !strings.Contains(result, "[Opus]") {
+	if !strings.Contains(result, "[claude-opus-4-6]") {
 		t.Errorf("expected output to contain '[Opus]', got %q", result)
 	}
 	if !strings.Contains(result, "my-project") {
@@ -289,7 +289,7 @@ printf '%b' "[$MODEL] \e]8;;${REMOTE}\a${REPO_NAME}\e]8;;\a\n"
 	cfg := &config.StatusLineConfig{Type: "command", Command: script}
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
 
-	if !strings.Contains(result, "[Opus]") {
+	if !strings.Contains(result, "[claude-opus-4-6]") {
 		t.Errorf("expected output to contain '[Opus]', got %q", result)
 	}
 	// Check for OSC 8 escape sequence markers.
@@ -339,7 +339,7 @@ fi
 
 	// First run (cold cache).
 	result1 := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
-	if !strings.Contains(result1, "[Opus]") {
+	if !strings.Contains(result1, "[claude-opus-4-6]") {
 		t.Errorf("run 1: expected '[Opus]', got %q", result1)
 	}
 	if !strings.Contains(result1, "main") {
@@ -376,7 +376,7 @@ print(f"[{model}] {bar} {pct}%")
 	cfg := &config.StatusLineConfig{Type: "command", Command: "python3 " + script}
 	result := runStatusLineCmd(cfg, sampleStatusLineData(), 10*time.Second)
 
-	if !strings.Contains(result, "[Opus]") {
+	if !strings.Contains(result, "[claude-opus-4-6]") {
 		t.Errorf("expected '[Opus]', got %q", result)
 	}
 	if !strings.Contains(result, "25%") {
@@ -421,8 +421,8 @@ func TestStatusLineData_JSONSchema(t *testing.T) {
 	if model["id"] != "claude-opus-4-6" {
 		t.Errorf("model.id = %v, want 'claude-opus-4-6'", model["id"])
 	}
-	if model["display_name"] != "Opus" {
-		t.Errorf("model.display_name = %v, want 'Opus'", model["display_name"])
+	if model["display_name"] != "claude-opus-4-6" {
+		t.Errorf("model.display_name = %v, want 'claude-opus-4-6'", model["display_name"])
 	}
 
 	// Check context window fields.
@@ -478,8 +478,8 @@ func TestBuildStatusLineData_ResolvedModelID(t *testing.T) {
 	if data.Model.ID != "claude-sonnet-4-20250514" {
 		t.Errorf("with resolvedModelID: model.id = %q, want %q", data.Model.ID, "claude-sonnet-4-20250514")
 	}
-	if data.Model.DisplayName != "Sonnet" {
-		t.Errorf("display_name = %q, want %q", data.Model.DisplayName, "Sonnet")
+	if data.Model.DisplayName != "claude-sonnet-4-20250514" {
+		t.Errorf("display_name = %q, want %q", data.Model.DisplayName, "claude-sonnet-4-20250514")
 	}
 }
 
